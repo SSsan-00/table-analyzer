@@ -9,20 +9,31 @@ public sealed class SimpleSourceAnalyzer
 {
     public AnalysisResult Analyze(IReadOnlyList<SourceFile> files, AnalyzerConfiguration configuration)
     {
+        return Analyze(files, configuration, progress: null);
+    }
+
+    public AnalysisResult Analyze(IReadOnlyList<SourceFile> files, AnalyzerConfiguration configuration, IProgress<AnalysisProgress>? progress)
+    {
         var result = new AnalysisResult();
         var reader = new SourceTextReader();
         var ids = new IdSequence();
+        var completed = 0;
 
+        progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, ""));
         foreach (var file in files)
         {
             var read = reader.Read(file.FullPath);
             if (!read.Success)
             {
                 result.Warnings.Add(new WarningRow(ids.NextWarningId(), "Medium", "FILE_READ_FAILED", file.RelativePath, 0, "", read.ErrorMessage ?? "Failed to read file.", "", ""));
+                completed++;
+                progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
                 continue;
             }
 
             AnalyzeFile(file, read.Text, configuration, result, ids);
+            completed++;
+            progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
         }
 
         return result;

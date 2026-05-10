@@ -79,6 +79,12 @@ public sealed record WarningRow(
     string RelatedUsageId,
     string RelatedSqlId);
 
+public sealed record AnalysisProgress(
+    string Stage,
+    int Completed,
+    int Total,
+    string CurrentFile);
+
 public sealed class AnalysisResult
 {
     public List<TableUsageRow> TableUsages { get; } = [];

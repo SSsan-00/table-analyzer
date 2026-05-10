@@ -70,6 +70,29 @@ dotnet .\src\TableAnalyzer.Cli\bin\Release\net10.0\TableAnalyzer.Cli.dll `
   --out "C:\work\table-analysis"
 ```
 
+解析中は標準エラーに進捗が表示されます。
+
+```text
+Scanning input: C:\src\MyApp
+Files queued: 1840
+Analyzing: 0/1840 (0%)
+Analyzing: 25/1840 (1%) Services\UserService.cs
+Analyzing: 50/1840 (2%) Pages\Users\Index.cshtml.cs
+...
+Analyzing: 1840/1840 (100%) Services\LastFile.cs
+Writing reports...
+```
+
+進捗表示を抑止したい場合は `--quiet` を指定します。
+
+```powershell
+dotnet .\src\TableAnalyzer.Cli\bin\Release\net10.0\TableAnalyzer.Cli.dll `
+  analyze `
+  --input "C:\src\MyApp" `
+  --out "C:\work\table-analysis" `
+  --quiet
+```
+
 単一ファイルだけ解析する場合:
 
 ```powershell

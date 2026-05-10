@@ -40,8 +40,14 @@ internal static class CliProgram
 
             var reportDirectory = new ReportDirectoryFactory().Create(outputRoot, input, DateTime.Now);
             var scanner = new FileSystemScanner();
+            Console.Error.WriteLine($"Scanning input: {Path.GetFullPath(input)}");
             var files = scanner.GetSourceFiles(input, configuration);
-            var result = new SimpleSourceAnalyzer().Analyze(files, configuration);
+            Console.Error.WriteLine($"Files queued: {files.Count}");
+            var progress = options.ContainsKey("quiet")
+                ? null
+                : new ConsoleAnalysisProgressReporter();
+            var result = new SimpleSourceAnalyzer().Analyze(files, configuration, progress);
+            Console.Error.WriteLine("Writing reports...");
             new CsvReportWriter().Write(reportDirectory, result);
 
             Console.WriteLine($"Input: {Path.GetFullPath(input)}");
@@ -127,5 +133,54 @@ internal static class CliProgram
         Console.WriteLine("  --extensions .cs,.cshtml.cs");
         Console.WriteLine("  --max-call-depth 8");
         Console.WriteLine("  --max-candidates 50");
+        Console.WriteLine("  --quiet");
+    }
+
+    private sealed class ConsoleAnalysisProgressReporter : IProgress<AnalysisProgress>
+    {
+        private readonly object _gate = new();
+        private DateTime _lastPrintedAt = DateTime.MinValue;
+        private int _lastPrintedCompleted = -1;
+
+        public void Report(AnalysisProgress value)
+        {
+            lock (_gate)
+            {
+                if (!ShouldPrint(value))
+                {
+                    return;
+                }
+
+                _lastPrintedAt = DateTime.UtcNow;
+                _lastPrintedCompleted = value.Completed;
+
+                if (value.Total == 0)
+                {
+                    Console.Error.WriteLine("Analyzing: no source files found");
+                    return;
+                }
+
+                var percent = (int)Math.Floor(value.Completed * 100.0 / value.Total);
+                var current = string.IsNullOrWhiteSpace(value.CurrentFile)
+                    ? ""
+                    : $" {value.CurrentFile}";
+                Console.Error.WriteLine($"Analyzing: {value.Completed}/{value.Total} ({percent}%){current}");
+            }
+        }
+
+        private bool ShouldPrint(AnalysisProgress value)
+        {
+            if (value.Completed == 0 || value.Completed == value.Total)
+            {
+                return true;
+            }
+
+            if (value.Completed - _lastPrintedCompleted >= 25)
+            {
+                return true;
+            }
+
+            return DateTime.UtcNow - _lastPrintedAt >= TimeSpan.FromSeconds(2);
+        }
     }
 }

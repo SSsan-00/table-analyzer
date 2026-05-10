@@ -17,6 +17,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
+    ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -314,6 +315,46 @@ internal static class Tests
         Assert.Equal(target.SqlId, source.SqlId);
     }
 
+    public static void AnalyzerReportsFileProgress()
+    {
+        using var temp = TempWorkspace.Create();
+        var first = temp.Write("Services/One.cs", """
+            class One
+            {
+                void Run()
+                {
+                    db.Query("SELECT * FROM dbo.One");
+                }
+            }
+            """);
+        var second = temp.Write("Services/Two.cs", """
+            class Two
+            {
+                void Run()
+                {
+                    db.Query("SELECT * FROM dbo.Two");
+                }
+            }
+            """);
+        var progress = new CapturingProgress();
+
+        new SimpleSourceAnalyzer().Analyze(
+            [
+                new SourceFile(first, "Services/One.cs"),
+                new SourceFile(second, "Services/Two.cs")
+            ],
+            new AnalyzerConfiguration(),
+            progress);
+
+        Assert.Equal(3, progress.Items.Count);
+        Assert.Equal(0, progress.Items[0].Completed);
+        Assert.Equal(2, progress.Items[0].Total);
+        Assert.Equal(1, progress.Items[1].Completed);
+        Assert.Equal("Services/One.cs", progress.Items[1].CurrentFile);
+        Assert.Equal(2, progress.Items[2].Completed);
+        Assert.Equal("Services/Two.cs", progress.Items[2].CurrentFile);
+    }
+
     public static void CsvWriterWritesAllExpectedFilesWithBom()
     {
         using var temp = TempWorkspace.Create();
@@ -382,6 +423,16 @@ internal sealed class TempWorkspace : IDisposable
         {
             Directory.Delete(Root, recursive: true);
         }
+    }
+}
+
+internal sealed class CapturingProgress : IProgress<AnalysisProgress>
+{
+    public List<AnalysisProgress> Items { get; } = [];
+
+    public void Report(AnalysisProgress value)
+    {
+        Items.Add(value);
     }
 }
 
