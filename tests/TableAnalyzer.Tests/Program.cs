@@ -16,6 +16,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
+    ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -283,6 +284,34 @@ internal static class Tests
         Assert.Single(result.TableUsages);
         Assert.Equal("dbo.Sessions", result.TableUsages[0].FullName);
         Assert.Equal("DELETE", result.TableUsages[0].Operation);
+    }
+
+    public static void AnalyzerReportsInsertSelectTargetAndSource()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/ArchiveService.cs", """
+            class ArchiveService
+            {
+                void Run()
+                {
+                    var sql = "INSERT INTO dbo.UserArchive (Id, Name) SELECT Id, Name FROM dbo.Users";
+                    db.Execute(sql);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/ArchiveService.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(2, result.TableUsages.Count);
+
+        var target = result.TableUsages.Single(row => row.FullName == "dbo.UserArchive");
+        Assert.Equal("INSERT", target.Operation);
+        Assert.Equal("Target", target.SqlRole);
+
+        var source = result.TableUsages.Single(row => row.FullName == "dbo.Users");
+        Assert.Equal("SELECT", source.Operation);
+        Assert.Equal("Source", source.SqlRole);
+        Assert.Equal(target.SqlId, source.SqlId);
     }
 
     public static void CsvWriterWritesAllExpectedFilesWithBom()
