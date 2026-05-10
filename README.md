@@ -1,6 +1,7 @@
 # Table Analyzer
 
 C# / Razor Pages projects are scanned read-only and SQL table usages are exported as CSV.
+C# source is parsed with Roslyn syntax trees, so comments and string literal contents are not treated as executable code.
 
 ## Build
 

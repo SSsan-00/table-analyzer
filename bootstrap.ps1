@@ -12,371 +12,283 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Embedded runnable-source snapshot only. Tests and samples are intentionally omitted.
-$Files = @{
-    "src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj" = @'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-</Project>
+# Embedded runnable-source snapshot generated from src/. Tests, samples, bin, and obj are intentionally omitted.
+$ArchiveBase64 = @'
+UEsDBAoAAAAAANKwqlwAAAAAAAAAAAAAAAAEABwAc3JjL1VUCQAD3IIAariIAGp1eAsAAQT1AQAA
+BBQAAABQSwMECgAAAAAAs7GqXAAAAAAAAAAAAAAAABYAHABzcmMvVGFibGVBbmFseXplci5DbGkv
+VVQJAAOBhABqkIcAanV4CwABBPUBAAAEFAAAAFBLAwQUAAAACADSsKpcEzIj5MIAAABeAQAALgAc
+AHNyYy9UYWJsZUFuYWx5emVyLkNsaS9UYWJsZUFuYWx5emVyLkNsaS5jc3Byb2pVVAkAA9yCAGq7
+iABqdXgLAAEE9QEAAAQUAAAAbY9BCsIwEEX3niL0AKnuY0BEpQuraD1AjaPEpkmYTtB6elMrUtTl
+vHn8+SO26K6giO1P1TRZa4WucWfi+aLgESVyxJiIjgekdoUu+I5EtgnkAxWtB7m4g0gHcy8UJV6A
+lljWcHNYSQs0GfOxSL8XvZ7V3mil6dBoe2kk2PJoYuwX7t08GNOtP9YHdG3Tn7oiI6iH5d9P7+AM
+CFYBy6wy4QTThPPYLybNbGnaByCfO4Q/iKvGx5CEpf3NwYVXgS5ejp5QSwMEFAAAAAgArrGqXFqk
+KbNjBQAA2RMAACAAHABzcmMvVGFibGVBbmFseXplci5DbGkvUHJvZ3JhbS5jc1VUCQADeIQAaruI
+AGp1eAsAAQT1AQAABBQAAAC1WFtPKzcQfs+v8FlV52xEsoJKlSpu1WkIFRIBykJ5QDz47JrEwmsv
+tjckBf57x14ve00CtI2EsrFnvpn5djzjIVOUT9EV/sHId47Z8m8ig5GQZK/Xk0RnkqMRoxdSTCVO
+gsuM+1hOVR92KddEggZSGmsaoYhhpSrCvecegk+a/WCw64RACRkQpSWYvb1DFs0K5uLmo+Xy7blc
+NR96j6z94JTwqZ6hgwO0jV5eLAp4zTWmXPnecDgjLPUGKLRmRiJJsYS4zmVMweOTKYcAR1iRfpfy
+7D2K/ZpfdS/N5wL09bXCU+IDWc1dx2wrlN/QDtpF23WF117t5xxLFIkkwTxGBxbidvtur0XTl5zi
+YPyYYaZ8pzFAHs7fciNIqgT/RJhAmxKMBGMphQxuJNXklHLi/+Rd8wcunnjh6i56dk+vXgch76Jr
+ZyMvItUUPAJeLrBU5Dz/madM+EBTf6cfXInvUuKl3+93kOYAgiu5/IPovzDLiO9RnmYa+BKZtlbs
+b5s6juMTdZYxdi5vZhB/mOKI+LnMZ+nzJlTZcynJY0YliV1ku2g4zL35LEuroxS1GOEbzFwKsSnQ
+iuD/Ea34F7HmJ4Xf02kmsQGEvPg9oyweVRd9x0bDCidPplK5FAKOaIy1kH4/cM/uHQ+qVO21HZAk
+FVIfQVgRqC/BBYtcXz3G9gvAR5IY6BJzgJyZI1i/ogkJzsRTw1djR0WYcyId/jFlJFwqTZIwX28e
+K6NyD0LmrDjVAHIhFJmMiNFWRXg1BjtQJFEZ085uSJMULFuUop1AVO7RtxbXQxqUkZrnBNkcMQD2
+wW9wOXC2m7QXeVYtRycmGChCF1jPTKDHkMfm2R3UVlHqwpiImACEb+gJxguqtCOpD4XbCyGDGbGk
+elDEvfKVw3cmFZ0T7312LP3I1WlTOS1t0KIyrt8FEP55ihSnaUq0AvWcpSB8ZKFb/ACWvRmgzJTm
+CpZdtfX6I1hHS44TuAWAfyWUWwTvPoB0zUFbsDnUihpYuf4xvBssOby/SoTFygdAzu2htRC1PG0p
+u+pV6fOvb08R1tEM+eNFRGzpQWRR1tXnTh/azdeugCNkEUyIMq9plQ87TR9cDU0lnUPBKe5txVmu
+Vc6uYnpySXB8ztnyiEZmAcvlft48Bq6JHBZdunnt6yrXphp02q7Ws7wnRyyLyXihCVfuDlADC06a
+EnWABC9GmLEjYH3W0p1UNjvUeGwbQtvmpLp7QeR4kUJ6GeuVkmVacmdHJm+uVhpzudhHX7+iL6s7
+c0VyVQZ1sVaqBWHKqPa/Db4Vd0W74FpicEkSMSfjJNXLMYdtiP+lS+5K0sQJ9KvZtpkAIHcYAe/D
+2BBfIaH6snIzlgy4QxoAe/fz2zKlfmokYru1kptGQlRUPhNEkQTNIIr1tVHUhZphlPvrY6lkaVOx
+MyJXIVYewRW2WucM7LXybFBTgWJntt8K5hlOOg5Tp1QdCIr+eAHd1shPiJ6JuA3TIVMHmdRffDUP
+OgQ7T3ehVmyW9O6tKbJrSmZtnFk7PNfHIPPyVsP6G8fcMjHuhUR+XmljsgDo7T33uF+dY93i1taq
+VDQQIF+Mrla6a3yF3SDUWGp1Q+GaBjP9mol14+gBKaApz8jGeeGBLHPXbn8OgoZfZn9uDjVIeFpm
+xGv7nVOyBXN8jRZbqsuAjcDdfxhe4ZW1sLXVRWojVpcitxDvHShagHVVwMmvS9+5oHFtkG9kZvvK
+5FnB3erVpEMI1f87VVyMi1EY7Zvr8VDI4b1gMZGH+dSI9vMZaihhiDpcb2K9fXfsNrs5HJa9EwWR
+GsDfTCcMvt6hW2926Nd3q7zV9V+2C53X3mvvH1BLAwQKAAAAAAB2tKpcAAAAAAAAAAAAAAAAFwAc
+AHNyYy9UYWJsZUFuYWx5emVyLkNvcmUvVVQJAAOviQBqxIkAanV4CwABBPUBAAAEFAAAAFBLAwQU
+AAAACAAQtKpcZe0NBr0AAAA7AQAAMAAcAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUvVGFibGVBbmFs
+eXplci5Db3JlLmNzcHJvalVUCQAD74gAavGIAGp1eAsAAQT1AQAABBQAAABlkEEOgjAQRfecoukB
+CiQuK4khalhIiKL7WgaslJZMSwy3FyQxRLfvv8z8GV6gfYL05FK1W3pSEq2ztWf5vmQToklACJ+c
+HtCPR7RDP5OJlQIb8AcUHbwstokBH0cs4uFvsOhZ12sllb86ZRqXgBF3DTz8wYubD1rP8df6grlM
++NeGZx66dbdCyFY0cIYaEIwEkhmphwrWB6a2gp0RenTKsfTyENhTcgN0ypot3bCYRZSEy8bV/M/6
++WFJ8AZQSwMEFAAAAAgA0rCqXDq7zO53AAAAiAAAADAAHABzcmMvVGFibGVBbmFseXplci5Db3Jl
+L1NxbEV4ZWN1dGlvbk1ldGhvZFNwZWMuY3NVVAkAA9yCAGq7iABqdXgLAAEE9QEAAAQUAAAAJcxB
+CsIwEAXQfU4xS4XiBYpIERcudNNeIE0+NTCdxEkCrae3pfvHEzsjJ+tAgx0ZnVhef9DLPSpaY1Id
+OTjKsAxPChfVU//lxwJXS4jyQvlE3ye4Uy4aZKL3NjYUpOyu06nOkPIUj6Whg9xoWBN2R1eSynxu
+zR9QSwMEFAAAAAgA0rCqXD3vBlwEAgAAaAgAACgAHABzcmMvVGFibGVBbmFseXplci5Db3JlL0Fu
+YWx5c2lzTW9kZWxzLmNzVVQJAAPcggBqu4gAanV4CwABBPUBAAAEFAAAAM1V227bMAx991focQOG
+/UA3A4PbbgOadogT7GHYA21xiTZZUnVp4xb99ymKm1iyc+kwDMuTcyiK5CEPJaBBo6BGMoOK4wcB
+vH1A/baQGs+yTLmKs5oYBI6UaKylppuTcwMLnMr7VxnxP2M1EwsSwM/0TR8rb3mC3FQ/sbazVuEI
+fO0TiuBLx/kAvFGowTIp0lBTyeOThRQ/GEVRx3Apna7xkj2fZsKSKyZ6/wrJXSPSuyww4T/Ltqkk
+T4NfrLB266wmaJcyLroAzoul9+5F8NA5KruMDp63AhpWfwFrUSfxQVBGweJHLZ1KWL2WFs3rgz0r
+XdOAbtOu/c1+mF15YRgK6YSN/T3nZk+LJrDaWCopOfkEpiMjXBVb5uKXkPciWPZW3bmHuYhrPkjl
+4eE4ZRjGmrhpeRd2yMvWtI+cCJ6i8fO5ZtzHWL5gEOZCr13vkI6wMtTqP9fJFMEksr5YKZ+zSdWe
+KOqk6n3wUjCl0P6Hpe9bVbd8hiubVKkb4OwhdHFg/RNmvoJeZ53S0sEpNXiHmtk2SZ++ZMeeQtjE
+t32r/O2AcC8SOvbUdKbQymGhNQdjSHjhDDNeQI7b7DH4dwevmLHvotct7z12hjySBdoz8kTek2/f
+/f2jrrslm/e3LjvBP1pXeW97HfVMVZ3HOj/qH+ki78nkeNK7wcmfp2Xg9JT9BlBLAwQUAAAACAD1
+sKpcSLcyXuYBAABwBAAAMAAcAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUvUmVwb3J0RGlyZWN0b3J5
+RmFjdG9yeS5jc1VUCQADHYMAaruIAGp1eAsAAQT1AQAABBQAAACNVNtq4zAQffdXDKYQGVJ/QEJ2
+KUm7DWybpQnsY1HsSSOQJSPJTd00/74jO/GtW6heLGvmnDk6M7biGdqcJwgbvpV4o7gs39HEc21w
+GgR5sZUiAYtcYgqJ5NbCE+bauIUwmDhtyjtePYJjALQuAGeEeoG5Qe6Qnd904fLCPWntxpcEoejk
+D3f7MSwocyMyBKUPUcVVM/r1yg3sCilXDQPMwMPiX+juKOD3rOWPpg200RnXYpp31ickSK9cpeyR
+3KFKLcftm7DOskZ21GD8+gkKD232Uu10JzX2bL38SXsHIdGHO+kDPTstUzRnQVfhkVyalLQeHtL0
++v4+y6w9PR/XXAkn3jtcfhedwmmPzPRbeDFzrrOtUDhwZtyp3TFW7IB9MmZAHMHHB/i7fRVv/Tv2
+nHF7ow+Vm8vV7VuCuRNasauwnj1IG+VcUlfTErDin8BxUOEUdiSfgm+MxVBiCzfoCqOG5tXxM3Vu
+xCux0Xhz134Gva6cz5R38z9jnuy5sdQQH4/XKKkIS/Yw+1FF4qX9jc6hWZmFeBE+VHnsM2Ywuh7R
+DNJ+AqPnURRv9I0xvGRRv/v2LCf1ZcjiWhGrKhPIiIx5+KeL13kk4dHPh/m7Fw7X/t/BGsaI6ofV
+3IUkojm+eHQK/gFQSwMEFAAAAAgA9bCqXF8hpbj5AgAAvggAACsAHABzcmMvVGFibGVBbmFseXpl
+ci5Db3JlL0ZpbGVTeXN0ZW1TY2FubmVyLmNzVVQJAAMdgwBqu4gAanV4CwABBPUBAAAEFAAAAKVV
+XW/TMBR9768wFdISVAK8UjaplA5F2lq0DO1h6oOX3LYWjh1sp2s27b9zna/GYS0D8pIP+5577znH
+N4KmoDMaA7mmdxwmgvLiAVQwlQrGg0GW33EWEw2UQ0JiTrUm54xDVGgDaRRTIUANHgcEr3pveAU0
+WQheXDBtPkUyVzHYkDPyFcz+VXvaKCbWhIksN9+o2YxIk30qxYqtc0UNk4LE3Te/TFUltBdbkRoo
+CPU853yhbjbMQGR78lps328j9rH2Mhsl74mAezJR6zwFYWa7GDKbyhuGNpxkGE+YJgp+5kxBEgxH
+RCBtctXFH7ewT4P2cUsVWWFRYbOPnBJ7C5CKc/xunzsgY6cty1Iw2yGL2nNADjZjo16FOhQxzxNI
+3KhRj0jfCXWB7KXA5EqQ2+XYWep0191lGdyL2888lyqlnD1A2XDLAO6cI5H97vzls2SW3X1BBWIj
+VfF3zOxlbgHm0pzLXCR7vV93BU8kaCKkIWDzfCSPrUxPwyNiW2ejyJ0yBboKKa9N3yNm+AbNFAFV
+8WZRFhFMOG+CGWhXpOBmAwq8sr7TM9JROvujwL1YtMl3kYDC7kuEtuB+hS9AjoBjbAvds0J2xAFX
+wBFxW318JjF6oZdrobDoz1glQttk9h50YZDOchxMZZpRhZMMIxjOlXAtcKRNqYYe4rWcKEULD0Vt
+F2pXl2pWWtc6Z4ptUUuiDSaMyZ2UvCtDPdKyf51mdV5nT1Cjz3YGhMYPOpiIwoPmFVlwGrLJ0XWJ
+vmFIarvN5YVpBP6dGf8FzR6wTd26ktKMyP/yYI+SqkXtjEzHLlWmzJ2bNlDD2s5xewwbjCDKODPe
+bQnU1hwBMkHxabqhalRlmXDz/PqyIbCEqg6rRuelcguzNDPFTJjyxI77ajb1BNf0B3iXNssl3Xnv
+R/uVCxBrPDxvyQffL9WtV/rausaoRdhPNPsvxz+3MJQJ3WC84EAclb3W0j3AHYEPeLi04RVk3P6H
+j/J+8u7Ed3ceFKHa3FT7NPgFUEsDBBQAAAAIANKwqlx78nRoawEAACIEAAAvABwAc3JjL1RhYmxl
+QW5hbHl6ZXIuQ29yZS9BbmFseXplckNvbmZpZ3VyYXRpb24uY3NVVAkAA9yCAGq7iABqdXgLAAEE
+9QEAAAQUAAAAhVPda8IwEH/vXxH6tIGIL4OBmyBaQZhz073JGGly1oz00iXpbCf+70urotIP85Bw
+9/vg7pIgjcEklAH5oKGEIVKZ/4HujpSGvuclaSgFIwaoBE6YpMaQE2ekcC2iVFMrFHo7j7h15E8X
+QPkcZf4ijH0yVguMBmSKTKYcgswCGqcxZEcisH0iULh9T57Jyu8y43dIcWxsLIvo09Vx0zvISu+x
+0MCs0vlr0VfFv/RZlXux/FCg3zmHKvy+DLuRsFfxr7kMUXH4ihVPJVzlZyI6zMT4ZbK1/uWPDDJg
+acGfgd0ovkyADUg1f7MbhO2dfxCBG2HvvlMLDU2OrA5/T0HnjUC7bCK0se3oXI9hTVPZTFu6m5S1
+pV/ArTbHFt3wFnR7k9DY0kSruNnjjE7Rgk6UpBZ4HdOxysobjE5wAzZScUzxYFz3kARaMqPZiEo5
+hsRuqr/psUGAXHBXs3kDHWSJBlP8xqr8odf39t4/UEsDBBQAAAAIAPewqlwcUhirFgIAAIgFAAAq
+ABwAc3JjL1RhYmxlQW5hbHl6ZXIuQ29yZS9Tb3VyY2VUZXh0UmVhZGVyLmNzVVQJAAMigwBqu4gA
+anV4CwABBPUBAAAEFAAAAKVU3W/aMBB/z19x6kMVJBp17QvrxCbowoS0rRXQp2kPjnMQa8aObAdC
+K/732SEfJFAxaX663Pnu93GRM83ECuY7bXAdLDA3nzxPkDXqlFCEBYk4jgThu1dUwaNUaMtpFnFG
+QSPhGINCKlUMc5kpim7ADEk8Q51x40dScphnlKLWfdBGOSx3p/4IBZWxDX5ayCr5BUKlpPphm8gK
+eyeIlBOtO4CovDcP7CmvnqMDLvRL4JSYpFd0HPrcMWpXx03WnYpmMMMVs1apZyU3zKL6jzLGZ0tT
+V1eqSjAV2hBBnYDjURuiINoZ1DCECeMYOFYjzscu5xe02g1sCX7REHxHsTIJfB7CPVxfH6b8uv0N
+wyHc5uGkyX0oc+Nxk7urcpNea3xbqDsKTaYECNye36pRmd1VbcnLYjIIvqGZF8YeqPb6cJWZ5c3g
+JpLrqz6IjPOOrL13YovtGFhXHLAbWiH46AJU80RmPA7XzLjqNEZh2JKheoAl4dpSMomS2ycxFRvC
+WVwY+gCObQf6eM//Y4Hj+67y91Qff1FiaAL+Vyz0TQjnEaF/wpxiapgUlxblPKPpx/s7a1q9Dsun
+Ns6WykU104N6fJXpQ4fA6ZWOin+3qKB3zqOicMmjJiqdqokB5j3YJijAxxyYhulTU5MKXgTJTCIV
+e8V4VLw/rfJlx9tuXxJb/oCHtyUI16nZdb8wD5oXrS1w7+29v1BLAwQUAAAACAD1sKpcOs3F2zwC
+AACkBgAALQAcAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUvUnVuT3B0aW9uc1ZhbGlkYXRvci5jc1VU
+CQADHYMAaruIAGp1eAsAAQT1AQAABBQAAACdVNuO2jAQfc9XDKhaBRXlAxZVFaJQ5YVUy7b7bOIB
+LBk7HTvsheXfa4cQkhB2Uf2SyPaZOeeMZxTboslYivDIlhLHisnXN6RooglHQZDlSylSMMgkckgl
+MwYecpVkVmhl/jApOLOagn0AbpW3d1pwKM8wNJaEWoNQWW5/MbsZQrmjc+u2HrS2gwJ9jOGXWEEJ
+i2Izz6VM6GkjLC480bCKNBhUiDPWL7sh/QwKn2FM63yLyk5fUiw4h/3YwyFzeBAGCP/mgpBH/SEo
+54Ve1eOPqrCH4EZ2NVX/RS8p8B/xq2foJLhjBCvHKz4JgW/gP9FPtDO37/9rKkcNZb2ZkBhNX4Sx
+JmxEGcDdHfR+ODapK/lr953PNfv4c21nOlf8rPtLvS5cowGlLaBPcQ/7iuzB2dDFvKU+I20dS+Te
+Jaf+uqYGye+VTZXKufO8Bek1MPdNq0eXZUiqenXVoVbNZiFis3C5E/qtOFLYDDRsKrzB9VjtfEMm
+GRLzhl++OH6SDNvc2ML+JTqzjeB49Px8Jeo3vK9VICOxc13vetylSWGptYSmkrL7U6Z4MSCqeUAd
+k8B7qDRtHfc35JMTxhk5VSYnfCQmpAMvMGPkJ1F4YXCVqN4tzbhlbW4OSa3eI7Q5qS6i0cIysuZJ
+OFQz3xAWheyJ3ro8wmgVJcSFm7/x2t3ECTNYpui2tnTtGunyOKse+b5N1x9FU8WP7AqR1bOv4kw2
+jAbw/t51eyztFUCrqzy21TRFn3+FD7KetB+Cf1BLAwQUAAAACADSsKpc0oz8zFwAAABmAAAAJAAc
+AHNyYy9UYWJsZUFuYWx5emVyLkNvcmUvU291cmNlRmlsZS5jc1VUCQAD3IIAaruIAGp1eAsAAQT1
+AQAABBQAAAAtyDEKgDAMBdC9p8ioIF7ASQRnUS8Q60cLsZW0FfT0IvjG5/lAPNmCZl4ErWe5H2jd
+BUVjzJkXcZYiWLCSwgZdaQpZLXonKGJS5zfqs8jAaa/ojxHCyV34smzMC1BLAwQUAAAACACgtKpc
+Gy2Lv6oUAAB+aQAALgAcAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUvU2ltcGxlU291cmNlQW5hbHl6
+ZXIuY3NVVAkAA/yJAGr+iQBqdXgLAAEE9QEAAAQUAAAA5T3bdts4ku/5Cg6nT4dqq7nO4zqxHbct
+ZzwTX1ZSOnvW9uTQFGxzQpEKSTlxO/r3rcKFxI0kpKR7zvbywaEIoG4oFAqFArIsk+zOmzyWFZmH
+U/KlCsfkbplGxejLoiBlmeRZ+fLZktY6TeIiL/PbKjzMZ+Qgi9LHMukpDQ8n91GxcKoUTh6zKvry
+8tmzLJqTchHFxJtGNymr9xspoFFBoHixvEmT2CtJlJKZF6dRWXqTZL5IySRfFnFd/9nTMw8eXl1g
+G5NymVYerxScjEk0O8/Sx7dJWb1iAI6TlOx5t/C3HIqKxWGe3SZ3yyKqQCheLP8aUDwMGz4PUeEV
+DM2ul5HPGu5g8FKrGs1IwasyCrArxvSzXjmZlbzmyWxCPi1JFhOsU1e6BSFF8b0XYG3kwUsyxsug
+rtOQKtMAcBkpIaIOsE14vEzTi6i6l6jAJ7n1gr9g5XCyjGNQlIFSrMLHh4kjfB8VGShCGR7MZgEy
+wT+M888BcBaeAd/808ksGAw9/5TMkuXch7fjk7ejD+PRwdGH4wN4PYJvlMQxSaEXHgiSOfS2oSaU
+UNpGRZEXp0BddEe8/X0AESWoMlXO+KXNfdbA9wcaj/hAN1dJtiRqyeqZ8pNrCGoNFRrHjn04VBVl
+yOUwxG6U0EkAC1Iti4zXYzV46aJIHqKKeGUFsGLvIU9mCupGdz1GRVkVOOhK+t1JkYf6KBHkNrpG
+Kbfoe1UQAgrEhjIbyVP4FF5ERUnVOWB06Lqf5zhIsHX4hlSH+XyRpJSWd1lSjaFUHwBzUt3ndBBg
+2/CIlDHJZlFWnYFJKQNVEcPz2+njgrw6pY2OCBgLximjcE+v/qbIl4tfHgOGxNvd4+jCkxkBTbhN
+YHD8GqVLwjp3QiWMREcFlJwXswTkp8Gc5kdJjDij4jG4QwQIl76E/yCPQ6/+phmjNqIHrO00PyiK
+6BFHSQsdklVAyZEHoDyqcmFqGhs/EiWc8VLTW6kLFPOSZA95zPQIjMxxks0mn9KT+mMZYBfpsJA8
+UoCQpdbAfPOLTwThZBFlkyoqqkGX5SoBI5ouYT6QglmgjWWsmNbIPNC0t/xXYOC1NEUzECVolU65
+YljIPU6KsjqAIVKCIM+LCUlvO/SuC8nkcX6Tp4zOQ+1roNNigcQ7miCddaeHvJOJwvGntNGCocGn
+rEH4oNmvgYeHUTZLZvAKM3i+zGAc73rbfRMB0reIqooU2BHMRIUn5RnMM+fFaL6oHiUMF6ziwNv3
+fvCfnp7aKF+tVr634xkNTYPO56F3Gbzk6QNBha0nI+UrTklUt6zTjFCm8G2SEennYZ4u54okWbcN
+ZYVhwj0DLwfmnTFILpkTalV8pZrCIgx3NspxvJvQG9bPcugQ21zGWQeokyxZLEjVzMLNtz+K62X2
+Mcs/Z8AwV4ahd5YX8yhNfiNATcC/bsqr07zN58dYqDE1/tSW+L7p7nTo/Z73wvv6VaKLTrEzNl2W
+nj97BI82iX0PTG/Ned9AsZAlTNyhVqRbE6m3jxhqWcubT9jZRkMb7qG1lqkg1mqq0tjx6X1srWUM
+775qekfZ63Mb9Pc8yQL/qz+0Ahj04qq7vK/mGG3MEiXSLrMeFdcUWZmT677DKdnKioOFjpdFAQ7P
+hM+t3Tb/BZhnNgvvdM/C+DhbIZmE39cYWTuxkaNmmervrrbJKuD85l8krtCLBZjn9MfoS1VEMZ2p
+2ZuEypQjmiQOpHX2tfev1AuO0+Af1xX+WV7LozwGtmabT4n2FR0+9tkBn5XZW8rgKgVxOLi4+NeU
+OQ1pvMMlaaP5zbdWk4yPGFy0Jl0ft1ZVuqy1Vs1OyP7BtZJ7bdplDrUxhuBa93xB+FLUoTJVz7QD
+rrt5xsdxPsPHYU5TqvGB0N5dThMgPvaB8x0Ab3cA0dyB8C3J7qp78Hu2wfQb0zJMA77vDs2l+1od
+vdUz+69VR+REC/nJK9Y92yJWC0qwJZzHlrYbRgebXhTRPAstgduy2x4GEZGPBl5jOOtFaNe6el5r
+F1+IRmmKZgq/yEvIBqwlRigBAUc4A0PQ6/a6eO7UFC9IDJQpombzA4mpd8WGR8nW5efFEbmNMPia
+VGTu7e4ZiLkbOPq0jNKS1grZnDSX5ic50JKUgFCEWiy8UwI517g8wN9I4EFxt5yDbT7JZuSLt6eE
+EkQZakP9g0/w30VykuLJflejJYHMbi9ll1amrkM5qNAAGdhDnqr7Cu9ums0mgUNef03trgBCo9tT
+/isQ2EP8Yoms/GFKJ+j7NpWr2ZF7z0knrS3/TRrZyKKHKhdtFCBadJGH3yWiumLwrPv2DfOoK6NH
+GiOpzQYcYVPBKz8nVXzfortNHBoRcehJ/ZEGUptQtTVqrcB7QzJSJLEE7I59oTFq9uoA5pTMb0hx
+QLeCDObntBAB6nJiJVTlBzaAv8BkDAI2IN6w7zaQvMgG8wPWR81vOr6/cxXzgC+cBFTKlr7Eov+T
+vfhfYIWwwkwC9El848KuZVEXhOPk7r7SZH2QJlFpgxcpBQhU/UI7zoFW2pkoaWkV6NavbJ9MxP+V
+vQBGI84zXgZ/bJ7bIi8TvouAVUJpqwshwXIAty0CVgZvg5BuYWDBBW/6UleYZt+3pkSgoQsMb8t7
+Mawxh4f3EYYHQE/g+8BNhY1thJadiX3u7uisN86c6cipus15kkOoK3Ufio6PXbGzZts2QSXr3jSR
+hxonSKFiv2vjTqm5g1sLVJFsVVfhUwegle8gfSV6JPZkP6UtxmNM7sgXWIUu0igmGIofeq/9q3IL
+t6g9fxBOi2QetHQ6S4goSJwXM20O5XjlWIthVbXNIGkw1BtjXfhUBU6yymPRIHxj698WACyDo9li
+1gQjaiOcD0sMfby0l4GwWkrUJWdLpc8s70AK2IlEE96PcuQFrc8P/runrS1G0s42fVAhOprzqChr
+PMHGQLNbUzPmz6AcIhSVPzeAUpoFg/QeIXEhSCD6FY0alCSmo0Lbwmb49rwmbFynJYgYvvgtx175
+Jy1S3gwoDAZ06ZJtZ7sWRU1hsy3P6Rx6bhvwIiugbKakDeIAvEsU8Xn1Jm2HCzn0Wo13GefCLVGR
+SRamRiFDpA2HdCayiEWhcS9oSTegyTcI4W9ReT8hde+31bd74KJDW+SicNQlJM2d7BKYWrdLP1RB
+eMAPmFJQ41IFgfZkRhZ6BFGTiweTePJA+JKxrddw5qWwvD1t3XkafUHX9wgL+/OvGk9DGa+X10O2
+t06U3XS6RSu2AUSK1BwkHANGxhsIOyZkBsXdu1PS0mbXe5d9LqKFpHpa297lkJ29t7B0LqLU0IeU
+ffc+35NM/AhPyn/AIoE7e/gaMgU1gAxsS3YJXSAgTvOPJGvcAktc/iSDmos8xWgmw2bQmkhV2hCL
+YWCCC+Tm9XiWFJQrpKZ0JqWw5gKNty254DMTJHu3yBHW7w7SA0MAEIh9n+OyNRpcmwCO/i25rb6F
+0Ta4dDnjDtgKFwaVD4MVfCGS0cHq23SidxXYrQN1zaBp9C0CaQ8Ve0qqVo9mPjQuoHj9FqpgRp3R
+dY9leMdNWY+yHaTobNCdnXJjxZPQhe9hIEyLJfmuGqgjOI7Scg0MXaoo4NoUcUJNrCHdUvu8joj1
+tuFBMS9DWNyRuAqiAoOhDdvwW4nRufI7kHMgfYbSxh+NFbxjeTeBHooTz2oDb0QaguvEd/40vgmu
+5jMWRe+JV5mx6oY+WNM+viEV80cyujbNlxXPFOSVaOHA0ctRW/XuJOEubSqrOd0ExJVsymgSzjHb
+E2m4axJUTfZ0oBikyCunLTCk6YHq2W4zRjR47oPEloJDpcRQwKC5N2rYExjU5Vhb9iYFqyU5YQIn
+1RMabMG3lffznvdkq7vyDeSrzi7k7Ijx3fTPJusLafpSB57L3PinGtf/pv1fvTebzcPuXSTc/VI2
+0+R9TP8YY3CV37Gb5n39atBi5RIZcdjuYIXejz8aUHUym9odsW8nFtZD1pJI5bMmXYgc+1CMKQaH
+0b+RU9jb83/h8RhlJpEVQMwncZMF+TspopJ/P6Yw1BQPNZSiAVO2wkW8PZPIRrewIOb5lAshQ7oj
+etHMrSw38JV7loHL7FQmd+DoLQs0DWDQuyLk//HkROHKN+cp2rOKJtAN4hr5wDXzbq18P+rTAOUN
+hbz7No6LmWihm0UmD+6373rbL/nrK7cO5dW3tlxFoDhT3Kj3YLpM2O55vzsnHlVslwq+a9mZ6c8r
+Scyd+80dnr6sTjbUZRNPtwXH2mcxpzjrnW4HqPrWQtCxikyjoSZHzibbBNQWQE68qkNoTOb5A5FG
+Ua91NdhwP+2zoRHlzWwLS50YOT9rE4dPmZz+H7t82NGOU8Tv2fP00DLtjPXsxfb3sBX1wqv0XObL
+ycdkEbwwjUET5mA1tVgH+7hZwMPEVUdALAcKWQ448MIkaju4hAm8Zuk0R1aDAazXLnkp3667NvyV
+1omMSZLnCrdMWJacsZpovgd+gX/u8xTPwvNCcFKffLCHDNOW5+N+BUMnJo4WVtsqIaNqmeDXyVAd
+F/m8AdaQqcqu9q1D7stvtkA1Iv+a1Vpro+FPY7+4g1Nt6myjj4h6l2SKfPDgAH7vPTXFoo9ewOE4
+u6ZRSSx9hj6WSDSD153W0DFlmfoVYk8K69O7B/RNqZbDMPjcgCA+tpyVUQm0aRF8ayfQGsxS2n4n
+J8+UCIsuWU8pt7bGh5uJzjo7UvjMexLJDHh0lFsmO4PMWHmr9ftCP+jQ4S8FVARgbZQdRb6s77Y5
+4oTEKINJqsBwzysjsdruGreYDiWdDB/T6+DLkAbYL/nscT/cLHb6mJB0JuRhhSz97PV8OQBs5hq/
+YgRYOrHrzCajdwLCJ3NuhCTU7SnwY7WdJfPdTiTypuF0krcdmiH3dtDrHOBpU05dIff1cH3PLCbS
+iHg4H8R9Q7A3RHpml65SCPtrKYTIvICqnQphsiXMptlUUZ4ZZzRHL4zx2KM2v0ZFgmP7qG5pvw5F
+eXjkiZ9k8OhZhXoDBNw9VYjejz+yKrboAZpglL6TnjbshScZwKaplMU+g7aJqgqx2gGHlj0j1lsd
+faf0R1Ti2lqMY5f+OKhbWE6xfP8eMdNf6OVZNioGTl3UcEyTMrBT+nIbLKFqfLTzMD058HwIO8ap
+7fTjIzRC4oMmgWw2Cz+oCtTr2YtZWzuWaLjQVZM7uYjkjC/TEW4WUbUrLJzpJ8/39Q01RX0REyou
+xegSDI5mLLcAPW9s1Lb20spwyUU/2VeWAnpG7YXBh+1qAZWNgtwmX2jwnAnDVRnUscx5Qzg1n/Yh
+aYeGDw4RZENIQz8/RvP4hFguiHT3Xvvgb8eGT2u2X0aHDR9lhzRBiXmLImahGBNx/Q7uCok7TOiF
+LfeYU1LfM5Em86RqzQaUH0twUjxUQOi1847bquXdAm9lGZwd0YTMiFqvt5TvkBkdMbtsjMoyW6j3
+5rkaAiXc2WkUIqmmk22w82gGjCW4nMnTKHtUlaNllGtlOMplXbq2q3R4BOwlGQjT5Uq1ulWT/mOu
+x/VbXSxM2bXdNq02B94HFlzrdrQmf3vKfGymzC+0lPm+aWDGhYonVvUdxGb47kq4ZEbNWOPanRRO
+o480q83J2tHjTM4RTuobcoIasjezrGvkS9co12JNyVSru3Fzo2qJmsfNnVO7ni4YpyTqbVSF5mYu
+o/wFlgvIGHHnh8rK4PnT8+68hJZmq85m+9LNWTsgG1JgMwthNL/PXxT5Da5q1Pyh1UurmW/vWKl/
+YulICu8gt/iJOtxFZI6PWuof9lhoS54+bXbN49xDSRyez9PQ/Q3pE3s0vaeW1yG341iBuPmNtCSg
+FOxGPMapG0MG6fycwQYsfb7HG1SDqpA7yayGj4j5tqWU2lvhQ6OqFxG6FvekhHXnzKB0IZe2x1eV
+0xVKm86wS01Ia2pETeZhVBrrUizpiEorRGHV70DLjF2l0I7UODryPYJNypRs2ZGSI6WimrhwV8zS
+TXX9gJloUTDAc3WjwZJr67YYUi+LQT8GAxHs+t0eldbCkjVZ9DoOK5XtsPCp3XrqRoljrYpIJLDu
+t13YetNumWS3334rkH5sll0sIsy1dDOWp3ximWX8U33HVV2nvshKfOG3VRkHF5mi8WvMjcvgnqmy
+Fa1grJRVfSASEDc7EK/9YP8VRkb2gv2dy7++vt6/urz859X19dbV9Vf6+/Lg5/+Jfv7twzV/2f75
+Pz9c//T16unynyuotRpAw6vyp6sQ/uCr1Lyv5eCngfXYqf3iJcbrnicuvNNPR5t6RT2dim7QH+Yp
+OvGHFU1JLfGstGUTvLloT75liSPWBw4o6mkEJh2g8XZDjx7Bjqkb/tq/ujken5/icWxwViWxw6w1
+Gb0dHU5xhmMnoXWXzQH2389Pznpg43pmA8jvLo4OpiMrbFaEsKdRcUeqDaCfnE1G4ylAPzmbnluR
+sBrfhOQIZEBZaO0BVuObkJyOxm8QB2g952WwbyKitb4Jz+i/R4eA4910NNi38oIVEMNFkcdktiwM
+deL2jSNw8ZHYhfENbfogbGitR+HQ2IuPu9ajuWHzCjR4LUO5nmooQd6c/k3EDQiCSkpFjYiWnS/Y
+bUEndxmAAPfEbSOhpg63H8SQwrUJEsm+sYGL3xgRJyUlA4m4DENKYcjvFMJ7GEYZ/T8KZO386Qff
+lUo7pfisna96y2cfsHL1bRPsgh1KMr0VoLz0cVLwr1kAveVK0ZjFc/gC7bae1ewr/j+Ct7yebDGR
+iRMUThaw6Ameh/UCkn4QMmc5jvQ8yiiDYlIOwreRfCHXAP8/CAHNHnnO64kfEKvKQ0enlb19echa
+a+xITOBGTfk+qe6D5399The8UzJfTM1VbE/j17wxNhSbe70AXFfvAJivENtAMsTnxa8J+exbLrwV
+99RK13txHyuXnKtc8qoaxZNsCjUmRiCkeWszfLoNMxyHdbwO9/sNpMHR4p73Gz40Le9Ppn+jUxJz
+6q4uW/y3q+v9AdQ7mKDrFjibIUsKXsWvpnW2JU5JcgjWZZ7Sr82hyKU9+55YhHqBDtshrG/Q8S3x
+RVHVv+T3HLQOhY62131tzUXI6tn/AlBLAwQUAAAACAALsapcDnD15LcGAADWGgAAKQAcAHNyYy9U
+YWJsZUFuYWx5emVyLkNvcmUvQ3N2UmVwb3J0V3JpdGVyLmNzVVQJAANGgwBqu4gAanV4CwABBPUB
+AAAEFAAAANVY62/bNhD/nr+CEwpUwhxhT2DwmhR5uG2GJtliB/3QFAMt0TFXilJIyo7b5n/f8aGn
+JTvu2g3TB1sk73jH+92LyiXlt2i8kook4YTcq1/39jhOiMxwRNAETxk54pitPhARnqSCwHKWTxmN
+kCSYkRhFDEuJTuTiimSpUG8EVUTsfdxD8DjKRUpjZBZ8qYSWJwztKRUkUqlYDZCRIam8IjJnCtb1
+X2A2sVvpp6QPTwTBipRjv7VfAFoWTAsskMyTBAtKJDpwW4fmZONiHo6Wc4UO0Xcln36ed1M3aIbo
+OKcsLhf9Osu1xLdE1tUxZgBr+b9jNQexyZRy0tZ/gDyl2fdzwx9GcuEFg3KPtw0FPCPkLPaAa3zH
+7Mvl9C/YarLKSDW6AFj16EXOWPF+mRGBFU25475KmZk/SfmMxoRHMGpKG6e5iMgLauleg/aWnuUJ
+d5wKUw4oj1fJNGVu49E9iXIt6JyoeWp0PMGMncyBthickkzN2/JOV+CONAJzgV85Uh7TGPB/KdI8
+s+e9SBWRXsn5boDWYQjHhIEZfJEu0cEh4mT59l3J8bEhFUhCZ9aBGRjD2tfKtPWxNqgdF+Z1q4WB
+y320iQdr0iqDO8LSzHasDR1O0rGJHz8YOCZt9Y7pJgTr0tYBcZwFJNXQgLImoolKx3FaGFkug1JJ
++xB8fmDYiF5tiYydo0DqkQHeJARDBxDIZkic4/u2l77C0pnEcGt6mLrm73m65Haq7pxlQtrRJz/T
+9+Sg8mhzsDU8zSk3eSWceYAmKQB0nKZM6xu2zhx0rNcNEPxD4GMra1/esS2wdyWIvrS1nqw2JBzn
+FD3SZDtxIg/KGYSohkAfbmOicmIhMnf0ie5Qe2T+aCWK3WK725Uqeww6M1vTJl8uMeRc6J0XJH6E
+i5SF8suVsyuCpa6jTUGj+wzUkq7CNkperytclyfZ3Rtqheq/KSHWDPa9OnxnefkSqAPU+5LTLCNq
+W5/0FTDf0CbdMd1NW5xFghn9YOAsJh/nCcAwLg73P/ODtYbGnr1AvmWSr+YfSyy09tt8440lc/5B
+FgS2X1mEY7Jb/TgHjzctQFPCFWGQE+Nas+5mrFt2gP+mUH035MujOLu7wxSoxLs1mNvgd6ctYr9+
+xsacOeUmLLUXbANT5Lzs/BTEEWhpL5Thbynl/ogvqEh5QqAqXZClPlEf4E+8l4Tr7ojER2qIPp7C
+24QmBHxuOVzBs39+vh/H6NWrYZIMpXxowfnEMxcLZC9osEHHdcOUxz7GsgMEXtm8hq6zuIqMxn+8
+rkTVGoYetqqONDmb9aWHGThQkVgr1npC6mEs3LZiKh3ZcVS+HqBvUQdq4BzGS6yLZIIuAB6AGprZ
+CL2mUj2rXchXV+nysH0JPxvxPAF8gepZhYmhtJC1vy24zSlXqMpcV5i/Lz5ZROVsoKOwGiK5pCqa
+90SkFxGhQ8jTTD+3ckIm0qlWziz+1Fp0/a5Z+7G1ltu+2qz9sLZWoGuWv28u/6nnqq8cD7UwFETl
+gjv7NJhC01oer4oU5LfvIsW9Y9i4hUA6uQZXEWd8AahgrvwgCJobu9R2q/eHnRuLTUPqR3/LmVEh
+FTpAhgXuLTDynb+0SdPy/gP09UThfYL8azdo5tbGrSkIT8HVKIdlmxUhMWVYEBFeiphyzM5ueSrI
+CZYk0FNEbKfr0XSmr1+7KFll739Ry5rPH/RqVkWPE3e8OiUyInApgLrSjK3A4ncpTskMQ6bwA/T8
+OfK8dfHON6H2oVbo+2u0+jFeUnfRrVTm2ryBqrxad9JUrta9bq1l8p8f9IlZu4IXT2X4Tbsf8VU3
+EOjgoJZOPn1C3zg/O5MXcKpLMUoyZXhbd7+gR9XHyCtTFMjrXC6zVNvdHlo5wnlRXVb1nWOrLzf3
+mqS6fPgbC0z1uVr3ly79Z+auega3m/iSs5UpQnbpEM1hkgi47tarTiep0X6t9ujYmur6RQQElvZx
+e6pjO1dPb44sPIK8ymNdK/1GzhhAznDqFLE5khHOIKZru8zAODiaI19L1malvKZYU7nHSrW9Zp/E
+h65uz9q02LzqPaFnzBiOiBY0MnlD+t6NuOGlq2wDzmzfQM4NFCy0za+zaGjYjhirKabMvUTDcT15
+8cuIR6lJYUS/EDGepzmLRwlVevUMPFvRGSViiJTIyWZFnTLWToWeC8xy0taNzjRIsFC04tJ/6j0N
+dFC1pwfd0zeiZ54/DfrwdtnWu/E8aNAsp8PE15MDvQT/un3T/504u00M9yOMUX07nMJPtzXqWyIo
+FNrSHhoib4aZJF4h5WHvb1BLAQIeAwoAAAAAANKwqlwAAAAAAAAAAAAAAAAEABgAAAAAAAAAEADt
+QQAAAABzcmMvVVQFAAPcggBqdXgLAAEE9QEAAAQUAAAAUEsBAh4DCgAAAAAAs7GqXAAAAAAAAAAA
+AAAAABYAGAAAAAAAAAAQAO1BPgAAAHNyYy9UYWJsZUFuYWx5emVyLkNsaS9VVAUAA4GEAGp1eAsA
+AQT1AQAABBQAAABQSwECHgMUAAAACADSsKpcEzIj5MIAAABeAQAALgAYAAAAAAABAAAApIGOAAAA
+c3JjL1RhYmxlQW5hbHl6ZXIuQ2xpL1RhYmxlQW5hbHl6ZXIuQ2xpLmNzcHJvalVUBQAD3IIAanV4
+CwABBPUBAAAEFAAAAFBLAQIeAxQAAAAIAK6xqlxapCmzYwUAANkTAAAgABgAAAAAAAEAAACkgbgB
+AABzcmMvVGFibGVBbmFseXplci5DbGkvUHJvZ3JhbS5jc1VUBQADeIQAanV4CwABBPUBAAAEFAAA
+AFBLAQIeAwoAAAAAAHa0qlwAAAAAAAAAAAAAAAAXABgAAAAAAAAAEADtQXUHAABzcmMvVGFibGVB
+bmFseXplci5Db3JlL1VUBQADr4kAanV4CwABBPUBAAAEFAAAAFBLAQIeAxQAAAAIABC0qlxl7Q0G
+vQAAADsBAAAwABgAAAAAAAEAAACkgcYHAABzcmMvVGFibGVBbmFseXplci5Db3JlL1RhYmxlQW5h
+bHl6ZXIuQ29yZS5jc3Byb2pVVAUAA++IAGp1eAsAAQT1AQAABBQAAABQSwECHgMUAAAACADSsKpc
+OrvM7ncAAACIAAAAMAAYAAAAAAABAAAApIHtCAAAc3JjL1RhYmxlQW5hbHl6ZXIuQ29yZS9TcWxF
+eGVjdXRpb25NZXRob2RTcGVjLmNzVVQFAAPcggBqdXgLAAEE9QEAAAQUAAAAUEsBAh4DFAAAAAgA
+0rCqXD3vBlwEAgAAaAgAACgAGAAAAAAAAQAAAKSBzgkAAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUv
+QW5hbHlzaXNNb2RlbHMuY3NVVAUAA9yCAGp1eAsAAQT1AQAABBQAAABQSwECHgMUAAAACAD1sKpc
+SLcyXuYBAABwBAAAMAAYAAAAAAABAAAApIE0DAAAc3JjL1RhYmxlQW5hbHl6ZXIuQ29yZS9SZXBv
+cnREaXJlY3RvcnlGYWN0b3J5LmNzVVQFAAMdgwBqdXgLAAEE9QEAAAQUAAAAUEsBAh4DFAAAAAgA
+9bCqXF8hpbj5AgAAvggAACsAGAAAAAAAAQAAAKSBhA4AAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUv
+RmlsZVN5c3RlbVNjYW5uZXIuY3NVVAUAAx2DAGp1eAsAAQT1AQAABBQAAABQSwECHgMUAAAACADS
+sKpce/J0aGsBAAAiBAAALwAYAAAAAAABAAAApIHiEQAAc3JjL1RhYmxlQW5hbHl6ZXIuQ29yZS9B
+bmFseXplckNvbmZpZ3VyYXRpb24uY3NVVAUAA9yCAGp1eAsAAQT1AQAABBQAAABQSwECHgMUAAAA
+CAD3sKpcHFIYqxYCAACIBQAAKgAYAAAAAAABAAAApIG2EwAAc3JjL1RhYmxlQW5hbHl6ZXIuQ29y
+ZS9Tb3VyY2VUZXh0UmVhZGVyLmNzVVQFAAMigwBqdXgLAAEE9QEAAAQUAAAAUEsBAh4DFAAAAAgA
+9bCqXDrNxds8AgAApAYAAC0AGAAAAAAAAQAAAKSBMBYAAHNyYy9UYWJsZUFuYWx5emVyLkNvcmUv
+UnVuT3B0aW9uc1ZhbGlkYXRvci5jc1VUBQADHYMAanV4CwABBPUBAAAEFAAAAFBLAQIeAxQAAAAI
+ANKwqlzSjPzMXAAAAGYAAAAkABgAAAAAAAEAAACkgdMYAABzcmMvVGFibGVBbmFseXplci5Db3Jl
+L1NvdXJjZUZpbGUuY3NVVAUAA9yCAGp1eAsAAQT1AQAABBQAAABQSwECHgMUAAAACACgtKpcGy2L
+v6oUAAB+aQAALgAYAAAAAAABAAAApIGNGQAAc3JjL1RhYmxlQW5hbHl6ZXIuQ29yZS9TaW1wbGVT
+b3VyY2VBbmFseXplci5jc1VUBQAD/IkAanV4CwABBPUBAAAEFAAAAFBLAQIeAxQAAAAIAAuxqlwO
+cPXktwYAANYaAAApABgAAAAAAAEAAACkgZ8uAABzcmMvVGFibGVBbmFseXplci5Db3JlL0NzdlJl
+cG9ydFdyaXRlci5jc1VUBQADRoMAanV4CwABBPUBAAAEFAAAAFBLBQYAAAAAEAAQAMMGAAC5NQAA
+AAA=
+
 '@
-
-    "src/TableAnalyzer.Cli/Program.cs" = @'
-using System.Text;
-using System.Text.RegularExpressions;
-
-Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-return ProgramMain.Run(args);
-
-internal static class ProgramMain
-{
-    private static readonly string[] IncludedExtensions = [".cs", ".cshtml.cs"];
-    private static readonly string[] ExcludedDirs = ["bin", "obj", ".git", ".vs", "node_modules", "Migrations"];
-    private static readonly string[] SinkNames =
-    [
-        "Execute", "ExecuteAsync", "Query", "QueryAsync", "QueryFirst", "QueryFirstOrDefault",
-        "QuerySingle", "QuerySingleOrDefault", "ExecuteSqlRaw", "ExecuteSqlRawAsync",
-        "FromSqlRaw", "FromSqlRawInterpolated", "SqlQueryRaw", "SqlQuery", "SqlCommand"
-    ];
-
-    public static int Run(string[] args)
-    {
-        try
-        {
-            if (args.Length == 0 || !string.Equals(args[0], "analyze", StringComparison.OrdinalIgnoreCase))
-            {
-                Console.Error.WriteLine("Usage: TableAnalyzer analyze --input <file-or-folder> --out <output-root>");
-                return 1;
-            }
-
-            var options = ParseOptions(args.Skip(1).ToArray());
-            var input = Required(options, "input");
-            var outRoot = Required(options, "out");
-            ValidateReadOnly(input, outRoot);
-
-            var reportDir = CreateReportDirectory(outRoot, input);
-            var files = GetFiles(input).ToArray();
-            var usages = new List<string[]>();
-            var snippets = new List<string[]>();
-            var unresolved = new List<string[]>();
-            var warnings = new List<string[]>();
-            var sqlSeq = 0;
-            var usageSeq = 0;
-            var warningSeq = 0;
-
-            foreach (var file in files)
-            {
-                var relative = File.Exists(input)
-                    ? Path.GetFileName(file)
-                    : Path.GetRelativePath(Path.GetFullPath(input), file).Replace(Path.DirectorySeparatorChar, '/');
-                var read = ReadText(file);
-                if (!read.Success)
-                {
-                    warnings.Add([$"W{++warningSeq:000000}", "Medium", "FILE_READ_FAILED", relative, "0", "", read.Error ?? "failed to read", "", ""]);
-                    continue;
-                }
-
-                AnalyzeSource(read.Text, relative, usages, snippets, unresolved, ref sqlSeq, ref usageSeq);
-            }
-
-            WriteCsv(Path.Combine(reportDir, "table-usages.csv"),
-                ["UsageId", "SqlId", "ObjectType", "ObjectName", "FullName", "Operation", "SqlRole", "Confidence", "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "CallChain", "CallDepth", "DynamicPattern", "CandidateGroupId", "Notes"],
-                usages);
-            WriteCsv(Path.Combine(reportDir, "sql-snippets.csv"),
-                ["SqlId", "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "Confidence", "SqlText", "NormalizedSqlText", "CallChain", "Notes"],
-                snippets);
-            WriteCsv(Path.Combine(reportDir, "unresolved-sql.csv"),
-                ["SqlId", "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "Reason", "Expression", "CallChain", "Notes"],
-                unresolved);
-            WriteCsv(Path.Combine(reportDir, "dynamic-sql.csv"),
-                ["CandidateGroupId", "SourceFile", "Line", "ContainingSymbol", "DynamicPattern", "CandidateCount", "Candidates", "Confidence", "ResolutionPath", "Notes"],
-                []);
-            WriteCsv(Path.Combine(reportDir, "warnings.csv"),
-                ["WarningId", "Severity", "Code", "SourceFile", "Line", "ContainingSymbol", "Message", "RelatedUsageId", "RelatedSqlId"],
-                warnings);
-            WriteCsv(Path.Combine(reportDir, "table-summary.csv"),
-                ["ObjectType", "ObjectName", "FullName", "Operations", "UsageCount", "Files", "ConfidenceMax", "HasDynamicUsage", "HasUnknownUsage"],
-                BuildSummary(usages));
-
-            File.WriteAllText(Path.Combine(reportDir, "run-summary.txt"),
-                $"Input: {Path.GetFullPath(input)}{Environment.NewLine}Files analyzed: {files.Length}{Environment.NewLine}Table usages: {usages.Count}{Environment.NewLine}SQL snippets: {snippets.Count}{Environment.NewLine}",
-                new UTF8Encoding(true));
-
-            Console.WriteLine($"Output: {reportDir}");
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine("Error: " + ex.Message);
-            return 1;
-        }
-    }
-
-    private static Dictionary<string, string> ParseOptions(string[] args)
-    {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        for (var i = 0; i < args.Length; i++)
-        {
-            if (!args[i].StartsWith("--", StringComparison.Ordinal)) continue;
-            var key = args[i][2..];
-            var value = i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[++i] : "true";
-            result[key] = value;
-        }
-        return result;
-    }
-
-    private static string Required(Dictionary<string, string> options, string name) =>
-        options.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
-            ? value
-            : throw new ArgumentException($"Missing required option: --{name}");
-
-    private static void ValidateReadOnly(string input, string outRoot)
-    {
-        var fullInput = Path.GetFullPath(input);
-        if (!File.Exists(fullInput) && !Directory.Exists(fullInput)) throw new FileNotFoundException(fullInput);
-        var protectedRoot = File.Exists(fullInput) ? Path.GetDirectoryName(fullInput)! : fullInput;
-        var output = EnsureTrailingSeparator(Path.GetFullPath(outRoot));
-        var root = EnsureTrailingSeparator(Path.GetFullPath(protectedRoot));
-        if (output.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Output directory must not be inside input directory.");
-    }
-
-    private static string EnsureTrailingSeparator(string path) =>
-        path.EndsWith(Path.DirectorySeparatorChar) ? path : path + Path.DirectorySeparatorChar;
-
-    private static string CreateReportDirectory(string outRoot, string input)
-    {
-        Directory.CreateDirectory(outRoot);
-        var inputName = Directory.Exists(input) ? new DirectoryInfo(input).Name : Path.GetFileName(input);
-        var name = DateTime.Now.ToString("yyyyMMdd-HHmmss") + "_" + Regex.Replace(inputName, "[^A-Za-z0-9-]", "_").Trim('_');
-        var path = Path.Combine(outRoot, name);
-        if (Directory.Exists(path) || File.Exists(path)) throw new IOException($"Report directory already exists: {path}");
-        Directory.CreateDirectory(path);
-        return path;
-    }
-
-    private static IEnumerable<string> GetFiles(string input)
-    {
-        var full = Path.GetFullPath(input);
-        if (File.Exists(full))
-        {
-            if (IncludedExtensions.Any(ext => full.EndsWith(ext, StringComparison.OrdinalIgnoreCase))) yield return full;
-            yield break;
-        }
-
-        foreach (var file in Directory.EnumerateFiles(full, "*", SearchOption.AllDirectories))
-        {
-            if (!IncludedExtensions.Any(ext => file.EndsWith(ext, StringComparison.OrdinalIgnoreCase))) continue;
-            var relative = Path.GetRelativePath(full, file);
-            var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (segments.Any(seg => ExcludedDirs.Contains(seg, StringComparer.OrdinalIgnoreCase))) continue;
-            yield return file;
-        }
-    }
-
-    private static (bool Success, string Text, string? Error) ReadText(string path)
-    {
-        try
-        {
-            var bytes = File.ReadAllBytes(path);
-            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-                return (true, Encoding.UTF8.GetString(bytes), null);
-            try
-            {
-                return (true, new UTF8Encoding(false, true).GetString(bytes), null);
-            }
-            catch (DecoderFallbackException)
-            {
-                return (true, Encoding.GetEncoding(932, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback).GetString(bytes), null);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
-        {
-            return (false, "", ex.Message);
-        }
-    }
-
-    private static void AnalyzeSource(string source, string relative, List<string[]> usages, List<string[]> snippets, List<string[]> unresolved, ref int sqlSeq, ref int usageSeq)
-    {
-        var variables = Regex.Matches(source, @"\b(?:const\s+)?(?:var|string)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?<expr>.*?);", RegexOptions.Singleline)
-            .Cast<Match>()
-            .ToDictionary(m => m.Groups["name"].Value, m => m.Groups["expr"].Value.Trim(), StringComparer.Ordinal);
-
-        foreach (var sink in SinkNames)
-        {
-            foreach (Match match in Regex.Matches(source, @"\b" + Regex.Escape(sink) + @"\s*\("))
-            {
-                var close = FindClosing(source, source.IndexOf('(', match.Index));
-                if (close < 0) continue;
-                var args = SplitTopLevel(source[(source.IndexOf('(', match.Index) + 1)..close], ',');
-                if (args.Count == 0) continue;
-                var sqlId = $"S{++sqlSeq:000000}";
-                var loc = Location(source, match.Index);
-                var sql = Resolve(args[0].Trim(), variables);
-                if (sql is null)
-                {
-                    unresolved.Add([sqlId, relative, loc.Line.ToString(), loc.Column.ToString(), "", sink, "RuntimeValue", args[0].Trim(), "", ""]);
-                    continue;
-                }
-
-                snippets.Add([sqlId, relative, loc.Line.ToString(), loc.Column.ToString(), "", sink, "certain", sql, Regex.Replace(sql, @"\s+", " ").Trim(), "", ""]);
-                foreach (var obj in ExtractObjects(sql))
-                {
-                    usages.Add([$"U{++usageSeq:000000}", sqlId, obj.Type, obj.ObjectName, obj.FullName, obj.Operation, obj.Role, "certain", relative, loc.Line.ToString(), loc.Column.ToString(), "", sink, "", "0", "", "", ""]);
-                }
-            }
-        }
-    }
-
-    private static string? Resolve(string expr, Dictionary<string, string> variables)
-    {
-        expr = expr.Trim();
-        if (variables.TryGetValue(expr, out var assigned)) return Resolve(assigned, variables);
-        if (expr.StartsWith('"') && expr.EndsWith('"')) return Regex.Unescape(expr[1..^1]);
-        var format = Regex.Match(expr, @"^(?:string\.)?Format\s*\((?<args>.*)\)$", RegexOptions.Singleline);
-        if (format.Success)
-        {
-            var parts = SplitTopLevel(format.Groups["args"].Value, ',');
-            var result = Resolve(parts[0], variables);
-            if (result is null) return null;
-            for (var i = 1; i < parts.Count; i++)
-            {
-                var value = Resolve(parts[i], variables);
-                if (value is null) return null;
-                result = result.Replace("{" + (i - 1) + "}", value, StringComparison.Ordinal);
-            }
-            return result;
-        }
-        var plus = SplitTopLevel(expr, '+');
-        if (plus.Count > 1)
-        {
-            var builder = new StringBuilder();
-            foreach (var part in plus)
-            {
-                var value = Resolve(part, variables);
-                if (value is null) return null;
-                builder.Append(value);
-            }
-            return builder.ToString();
-        }
-        return null;
-    }
-
-    private static List<(string Type, string ObjectName, string FullName, string Operation, string Role)> ExtractObjects(string sql)
-    {
-        var list = new List<(string, string, string, string, string)>();
-        Add(sql, list, @"\bFROM\s+(?<name>[#@]?\w+(?:\.\w+)*)", "SELECT", "Source");
-        Add(sql, list, @"\bJOIN\s+(?<name>[#@]?\w+(?:\.\w+)*)", "SELECT", "Join");
-        Add(sql, list, @"\bUPDATE\s+(?<name>[#@]?\w+(?:\.\w+)*)", "UPDATE", "Target");
-        Add(sql, list, @"\bINSERT\s+INTO\s+(?<name>[#@]?\w+(?:\.\w+)*)", "INSERT", "Target");
-        Add(sql, list, @"\bDELETE\s+FROM\s+(?<name>[#@]?\w+(?:\.\w+)*)", "DELETE", "Target");
-        Add(sql, list, @"\bEXEC(?:UTE)?\s+(?<name>[#@]?\w+(?:\.\w+)*)", "EXEC", "Procedure");
-        return list;
-    }
-
-    private static void Add(string sql, List<(string Type, string ObjectName, string FullName, string Operation, string Role)> list, string pattern, string operation, string role)
-    {
-        foreach (Match match in Regex.Matches(sql, pattern, RegexOptions.IgnoreCase))
-        {
-            var full = match.Groups["name"].Value;
-            var name = full.Split('.').Last();
-            var type = operation == "EXEC" ? "Procedure" : full.StartsWith('#') ? "TempTable" : full.StartsWith('@') ? "TableVariable" : "TableOrView";
-            list.Add((type, name, full, operation, role));
-        }
-    }
-
-    private static List<string[]> BuildSummary(List<string[]> usages) =>
-        usages.GroupBy(row => row[4], StringComparer.OrdinalIgnoreCase)
-            .Select(g => new[]
-            {
-                g.First()[2],
-                g.First()[3],
-                g.First()[4],
-                string.Join("|", g.Select(row => row[5]).Distinct(StringComparer.OrdinalIgnoreCase)),
-                g.Count().ToString(),
-                string.Join("|", g.Select(row => row[8]).Distinct(StringComparer.OrdinalIgnoreCase)),
-                "certain",
-                "false",
-                "false"
-            })
-            .ToList();
-
-    private static void WriteCsv(string path, IReadOnlyList<string> header, IEnumerable<string[]> rows)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine(string.Join(",", header.Select(Escape)));
-        foreach (var row in rows) builder.AppendLine(string.Join(",", row.Select(Escape)));
-        File.WriteAllText(path, builder.ToString().ReplaceLineEndings("\r\n"), new UTF8Encoding(true));
-    }
-
-    private static string Escape(string value) =>
-        value.Contains('"') || value.Contains(',') || value.Contains('\n') || value.Contains('\r')
-            ? "\"" + value.Replace("\"", "\"\"") + "\""
-            : value;
-
-    private static (int Line, int Column) Location(string text, int position)
-    {
-        var line = 1;
-        var column = 1;
-        for (var i = 0; i < position; i++)
-        {
-            if (text[i] == '\n') { line++; column = 1; } else { column++; }
-        }
-        return (line, column);
-    }
-
-    private static int FindClosing(string text, int open)
-    {
-        var depth = 0;
-        var inString = false;
-        for (var i = open; i < text.Length; i++)
-        {
-            var ch = text[i];
-            if (inString)
-            {
-                if (ch == '"' && (i == 0 || text[i - 1] != '\\')) inString = false;
-                continue;
-            }
-            if (ch == '"') inString = true;
-            else if (ch == '(') depth++;
-            else if (ch == ')' && --depth == 0) return i;
-        }
-        return -1;
-    }
-
-    private static List<string> SplitTopLevel(string text, char delimiter)
-    {
-        var result = new List<string>();
-        var start = 0;
-        var depth = 0;
-        var inString = false;
-        for (var i = 0; i < text.Length; i++)
-        {
-            var ch = text[i];
-            if (inString)
-            {
-                if (ch == '"' && (i == 0 || text[i - 1] != '\\')) inString = false;
-                continue;
-            }
-            if (ch == '"') inString = true;
-            else if (ch is '(' or '[' or '{') depth++;
-            else if (ch is ')' or ']' or '}') depth--;
-            else if (ch == delimiter && depth == 0)
-            {
-                result.Add(text[start..i]);
-                start = i + 1;
-            }
-        }
-        result.Add(text[start..]);
-        return result;
-    }
-}
-'@
-}
 
 function Initialize-Source {
     $srcRoot = Join-Path $PSScriptRoot "src"
@@ -385,17 +297,14 @@ function Initialize-Source {
         return
     }
 
-    foreach ($entry in $Files.GetEnumerator()) {
-        $target = Join-Path $PSScriptRoot $entry.Key
-        if ((Test-Path $target) -and -not $Force) {
-            throw "File already exists: $target. Use -Force to replace it."
-        }
-
-        $directory = Split-Path -Parent $target
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-        [System.IO.File]::WriteAllText($target, $entry.Value, [System.Text.UTF8Encoding]::new($false))
+    if ((Test-Path $srcRoot) -and $Force) {
+        Remove-Item $srcRoot -Recurse -Force
     }
 
+    $zipPath = Join-Path ([System.IO.Path]::GetTempPath()) ("table-analyzer-src-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
+    [System.IO.File]::WriteAllBytes($zipPath, [System.Convert]::FromBase64String(($ArchiveBase64 -replace "\s", "")))
+    Expand-Archive -Path $zipPath -DestinationPath $PSScriptRoot -Force:$Force
+    Remove-Item $zipPath -Force
     Write-Host "Source expanded under: $srcRoot"
 }
 

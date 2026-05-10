@@ -13,6 +13,9 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves string format sql", Tests.AnalyzerResolvesStringFormatSql),
     ("analyzer follows helper method return values recursively", Tests.AnalyzerFollowsHelperMethodReturnValuesRecursively),
     ("analyzer emits candidates from conditional helper method", Tests.AnalyzerEmitsCandidatesFromConditionalHelperMethod),
+    ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
+    ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
+    ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -217,6 +220,69 @@ internal static class Tests
         Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.OrdersArchive");
         Assert.All(result.TableUsages, row => Assert.Equal("probable", row.Confidence));
         Assert.Single(result.DynamicSql);
+    }
+
+    public static void AnalyzerIgnoresSqlLookingCallsInComments()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CommentedService.cs", """
+            class CommentedService
+            {
+                void Run()
+                {
+                    // db.Query("SELECT * FROM dbo.CommentOnly");
+                    var sql = "SELECT * FROM dbo.RealUsers";
+                    db.Query(sql);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CommentedService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.RealUsers", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerHandlesSemicolonsInsideSqlStringLiterals()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/MultiStatementService.cs", """
+            class MultiStatementService
+            {
+                void Run()
+                {
+                    var sql = "SELECT * FROM dbo.Users; SELECT * FROM dbo.Roles";
+                    db.Query(sql);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/MultiStatementService.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(2, result.TableUsages.Count);
+        Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.Users");
+        Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.Roles");
+    }
+
+    public static void AnalyzerDetectsSqlCommandObjectCreation()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/AdoService.cs", """
+            class AdoService
+            {
+                void Run()
+                {
+                    var sql = "DELETE FROM dbo.Sessions WHERE ExpiresAt < @now";
+                    using var command = new SqlCommand(sql, connection);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/AdoService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Sessions", result.TableUsages[0].FullName);
+        Assert.Equal("DELETE", result.TableUsages[0].Operation);
     }
 
     public static void CsvWriterWritesAllExpectedFilesWithBom()
