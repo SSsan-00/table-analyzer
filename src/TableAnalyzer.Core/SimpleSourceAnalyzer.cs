@@ -27,7 +27,8 @@ public sealed class SimpleSourceAnalyzer
         var reader = new SourceTextReader();
         var ids = new IdSequence();
         var parsedFiles = ReadAndParseFiles(MergeFiles(files, contextFiles), reader, result, ids, progress);
-        var methods = BuildMethodIndex(parsedFiles.Values);
+        var semanticContext = SemanticAnalysisContext.Create(parsedFiles.Values.Select(file => file.Root.SyntaxTree));
+        var methods = BuildMethodIndex(parsedFiles.Values, semanticContext);
         var completed = 0;
 
         progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, ""));
@@ -109,18 +110,18 @@ public sealed class SimpleSourceAnalyzer
         return merged;
     }
 
-    private static IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> BuildMethodIndex(IEnumerable<ParsedSourceFile> parsedFiles)
+    private static MethodIndex BuildMethodIndex(IEnumerable<ParsedSourceFile> parsedFiles, SemanticAnalysisContext semanticContext)
     {
-        return parsedFiles
+        var methods = parsedFiles
             .SelectMany(file => file.Root.DescendantNodes().OfType<MethodDeclarationSyntax>())
-            .GroupBy(method => method.Identifier.ValueText, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => (IReadOnlyList<MethodDeclarationSyntax>)group.ToArray(), StringComparer.Ordinal);
+            .ToArray();
+        return MethodIndex.Create(methods, semanticContext);
     }
 
     private static void AnalyzeFile(
         SourceFile file,
         CompilationUnitSyntax root,
-        IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> methods,
+        MethodIndex methods,
         AnalyzerConfiguration configuration,
         AnalysisResult result,
         IdSequence ids)
@@ -288,6 +289,189 @@ public sealed class SimpleSourceAnalyzer
 
     private sealed record ParsedSourceFile(CompilationUnitSyntax Root);
 
+    private sealed class SemanticAnalysisContext
+    {
+        private readonly CSharpCompilation _compilation;
+        private readonly Dictionary<SyntaxTree, SemanticModel> _models = new();
+
+        private SemanticAnalysisContext(CSharpCompilation compilation)
+        {
+            _compilation = compilation;
+        }
+
+        public static SemanticAnalysisContext Create(IEnumerable<SyntaxTree> trees)
+        {
+            var compilation = CSharpCompilation.Create(
+                "TableAnalyzerInput",
+                trees,
+                CreateMetadataReferences(),
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
+            return new SemanticAnalysisContext(compilation);
+        }
+
+        public SemanticModel GetModel(SyntaxTree tree)
+        {
+            if (!_models.TryGetValue(tree, out var model))
+            {
+                model = _compilation.GetSemanticModel(tree, ignoreAccessibility: true);
+                _models[tree] = model;
+            }
+
+            return model;
+        }
+
+        private static IReadOnlyList<MetadataReference> CreateMetadataReferences()
+        {
+            var trustedPlatformAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;
+            if (!string.IsNullOrWhiteSpace(trustedPlatformAssemblies))
+            {
+                return trustedPlatformAssemblies
+                    .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(path => MetadataReference.CreateFromFile(path))
+                    .ToArray();
+            }
+
+            return
+            [
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(Task).Assembly.Location)
+            ];
+        }
+    }
+
+    private sealed class MethodIndex
+    {
+        private readonly IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> _byName;
+        private readonly Dictionary<IMethodSymbol, MethodDeclarationSyntax> _bySymbol;
+        private readonly Dictionary<MethodDeclarationSyntax, string> _signatures;
+        private readonly SemanticAnalysisContext _semanticContext;
+
+        private MethodIndex(
+            IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> byName,
+            Dictionary<IMethodSymbol, MethodDeclarationSyntax> bySymbol,
+            Dictionary<MethodDeclarationSyntax, string> signatures,
+            SemanticAnalysisContext semanticContext)
+        {
+            _byName = byName;
+            _bySymbol = bySymbol;
+            _signatures = signatures;
+            _semanticContext = semanticContext;
+        }
+
+        public static MethodIndex Create(IReadOnlyList<MethodDeclarationSyntax> methods, SemanticAnalysisContext semanticContext)
+        {
+            var byName = methods
+                .GroupBy(method => method.Identifier.ValueText, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => (IReadOnlyList<MethodDeclarationSyntax>)group.ToArray(), StringComparer.Ordinal);
+            var bySymbol = new Dictionary<IMethodSymbol, MethodDeclarationSyntax>(SymbolEqualityComparer.Default);
+            var signatures = new Dictionary<MethodDeclarationSyntax, string>();
+
+            foreach (var method in methods)
+            {
+                var symbol = semanticContext.GetModel(method.SyntaxTree).GetDeclaredSymbol(method);
+                if (symbol is null)
+                {
+                    signatures[method] = CreateSyntaxSignature(method);
+                    continue;
+                }
+
+                signatures[method] = symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+                AddSymbol(bySymbol, symbol, method);
+                AddSymbol(bySymbol, symbol.OriginalDefinition, method);
+                AddSymbol(bySymbol, symbol.PartialDefinitionPart, method);
+                AddSymbol(bySymbol, symbol.PartialImplementationPart, method);
+            }
+
+            return new MethodIndex(byName, bySymbol, signatures, semanticContext);
+        }
+
+        public IReadOnlyList<MethodDeclarationSyntax> ResolveInvocationCandidates(InvocationExpressionSyntax invocation)
+        {
+            var model = _semanticContext.GetModel(invocation.SyntaxTree);
+            var symbolInfo = model.GetSymbolInfo(invocation);
+            if (symbolInfo.Symbol is IMethodSymbol resolvedMethod &&
+                TryResolveSymbol(resolvedMethod, out var resolvedDeclaration))
+            {
+                return [resolvedDeclaration];
+            }
+
+            var candidates = new List<MethodDeclarationSyntax>();
+            foreach (var candidate in symbolInfo.CandidateSymbols.OfType<IMethodSymbol>())
+            {
+                if (TryResolveSymbol(candidate, out var method) && !candidates.Contains(method))
+                {
+                    candidates.Add(method);
+                }
+            }
+
+            return candidates;
+        }
+
+        public IReadOnlyList<MethodDeclarationSyntax> GetFallbackCandidates(string methodName, int argumentCount)
+        {
+            if (!_byName.TryGetValue(methodName, out var candidates))
+            {
+                return [];
+            }
+
+            return candidates
+                .Where(method => method.ParameterList.Parameters.Count <= argumentCount)
+                .ToArray();
+        }
+
+        public string GetSignature(MethodDeclarationSyntax method)
+        {
+            return _signatures.TryGetValue(method, out var signature)
+                ? signature
+                : CreateSyntaxSignature(method);
+        }
+
+        private bool TryResolveSymbol(IMethodSymbol symbol, out MethodDeclarationSyntax method)
+        {
+            foreach (var lookupSymbol in GetLookupSymbols(symbol))
+            {
+                if (lookupSymbol is not null && _bySymbol.TryGetValue(lookupSymbol, out method!))
+                {
+                    return true;
+                }
+            }
+
+            method = null!;
+            return false;
+        }
+
+        private static IEnumerable<IMethodSymbol?> GetLookupSymbols(IMethodSymbol symbol)
+        {
+            yield return symbol;
+            yield return symbol.ReducedFrom;
+            yield return symbol.OriginalDefinition;
+            yield return symbol.ReducedFrom?.OriginalDefinition;
+            yield return symbol.PartialDefinitionPart;
+            yield return symbol.PartialImplementationPart;
+        }
+
+        private static void AddSymbol(
+            Dictionary<IMethodSymbol, MethodDeclarationSyntax> bySymbol,
+            IMethodSymbol? symbol,
+            MethodDeclarationSyntax method)
+        {
+            if (symbol is null)
+            {
+                return;
+            }
+
+            bySymbol[symbol] = method;
+        }
+
+        private static string CreateSyntaxSignature(MethodDeclarationSyntax method)
+        {
+            var containingType = method.FirstAncestorOrSelf<TypeDeclarationSyntax>()?.Identifier.ValueText ?? "";
+            return $"{containingType}.{method.Identifier.ValueText}/{method.ParameterList.Parameters.Count}";
+        }
+    }
+
     private sealed class IdSequence
     {
         private int _usage;
@@ -307,7 +491,7 @@ public sealed class SimpleSourceAnalyzer
     private sealed record SymbolicValue(IReadOnlyList<string> Candidates, string Pattern, string Confidence, string ResolutionPath, string Notes);
 
     private sealed class ExpressionEvaluator(
-        IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> methods,
+        MethodIndex methods,
         AnalyzerConfiguration configuration)
     {
         public SymbolicValue Evaluate(ExpressionSyntax expression, MethodDeclarationSyntax? scope)
@@ -403,15 +587,21 @@ public sealed class SimpleSourceAnalyzer
                 return EvaluateStringFormat(invocation, scope, parameters, depth, activeMethods);
             }
 
-            if (!methods.TryGetValue(methodName, out var candidates))
+            var candidates = methods.ResolveInvocationCandidates(invocation);
+            if (candidates.Count == 0)
+            {
+                candidates = methods.GetFallbackCandidates(methodName, invocation.ArgumentList.Arguments.Count);
+            }
+
+            if (candidates.Count == 0)
             {
                 return Unknown(invocation);
             }
 
             var evaluatedReturns = new List<SymbolicValue>();
-            foreach (var method in candidates.Where(method => method.ParameterList.Parameters.Count <= invocation.ArgumentList.Arguments.Count))
+            foreach (var method in candidates)
             {
-                var signature = $"{method.Identifier.ValueText}/{method.ParameterList.Parameters.Count}";
+                var signature = methods.GetSignature(method);
                 if (!activeMethods.Add(signature))
                 {
                     continue;

@@ -13,6 +13,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves string format sql", Tests.AnalyzerResolvesStringFormatSql),
     ("analyzer follows helper method return values recursively", Tests.AnalyzerFollowsHelperMethodReturnValuesRecursively),
     ("analyzer follows helper method from context files", Tests.AnalyzerFollowsHelperMethodFromContextFiles),
+    ("analyzer resolves helper method by using namespace", Tests.AnalyzerResolvesHelperMethodByUsingNamespace),
+    ("analyzer resolves helper method overload by argument type", Tests.AnalyzerResolvesHelperMethodOverloadByArgumentType),
     ("analyzer emits candidates from conditional helper method", Tests.AnalyzerEmitsCandidatesFromConditionalHelperMethod),
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
@@ -227,6 +229,81 @@ internal static class Tests
         Assert.Single(result.TableUsages);
         Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
         Assert.Equal("Index.cshtml.cs", result.TableUsages[0].SourceFile);
+    }
+
+    public static void AnalyzerResolvesHelperMethodByUsingNamespace()
+    {
+        using var temp = TempWorkspace.Create();
+        var page = temp.Write("Pages/Index.cshtml.cs", """
+            using App.Sql;
+
+            namespace App.Pages
+            {
+                class IndexModel
+                {
+                    void OnGet()
+                    {
+                        db.Query(SqlFactory.Build("Users"));
+                    }
+                }
+            }
+            """);
+        var selectedHelper = temp.Write("Sql/SqlFactory.cs", """
+            namespace App.Sql
+            {
+                static class SqlFactory
+                {
+                    public static string Build(string table) => "SELECT * FROM dbo." + table;
+                }
+            }
+            """);
+        var otherHelper = temp.Write("Other/SqlFactory.cs", """
+            namespace App.Other
+            {
+                static class SqlFactory
+                {
+                    public static string Build(string table) => "SELECT * FROM dbo.WrongUsers";
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze(
+            [new SourceFile(page, "Pages/Index.cshtml.cs")],
+            [
+                new SourceFile(page, "Pages/Index.cshtml.cs"),
+                new SourceFile(selectedHelper, "Sql/SqlFactory.cs"),
+                new SourceFile(otherHelper, "Other/SqlFactory.cs")
+            ],
+            new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesHelperMethodOverloadByArgumentType()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    db.Query(SqlFactory.Build("Users"));
+                }
+            }
+
+            static class SqlFactory
+            {
+                public static string Build(string table) => "SELECT * FROM dbo." + table;
+
+                public static string Build(int tableId) => "SELECT * FROM dbo.NumericUsers";
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
     }
 
     public static void AnalyzerEmitsCandidatesFromConditionalHelperMethod()
