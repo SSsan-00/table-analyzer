@@ -1,12 +1,13 @@
 # Table Analyzer
 
-Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVに出力するツールです。CLI とローカルGUIを用意しています。
+Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVに出力するツールです。CLI と Windows GUI を用意しています。
 
 C#ソースは Roslyn の構文木で解析します。コメント内の `db.Query(...)` のような文字列は実行コードとして扱いません。
 
 ## 対象環境
 
 - .NET SDK 9.0
+- Windows 10/11 (WinForms GUI)
 - SQL Server 向けSQL文字列
 - C# / Razor Pages の `.cs` / `.cshtml.cs`
 
@@ -27,24 +28,22 @@ C#ソースは Roslyn の構文木で解析します。コメント内の `db.Qu
 
 出力先フォルダは、解析対象プロジェクトフォルダや解析対象フォルダの外側を指定してください。入力配下を出力先にするとエラーになります。
 
-## GUIの使い方
+## WinForms GUIの使い方
 
-```bash
+Windowsで実行します。
+
+```powershell
 dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 ```
 
-起動後、ブラウザで次を開きます。
-
-```text
-http://localhost:5123
-```
-
-GUIでは次を入力します。
+画面では次を入力します。
 
 - 解析対象プロジェクトフォルダ: メソッド解決用に索引化するプロジェクトルート
 - 解析対象フォルダ: 実際にCSV出力対象として解析するフォルダ
 - 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
 - 出力先フォルダ: CSVレポートの出力先
+
+各パスは `選択` ボタンでフォルダ/ファイル選択できます。テキストボックスへのドラッグ&ドロップにも対応しています。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 
@@ -178,7 +177,7 @@ INSERT先は `Operation=INSERT`, `SqlRole=Target`、SELECT元は `Operation=SELE
 .\bootstrap.ps1 build
 ```
 
-GUIを起動する場合:
+WinForms GUIを起動する場合:
 
 ```powershell
 .\bootstrap.ps1 gui

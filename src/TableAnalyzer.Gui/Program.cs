@@ -1,257 +1,434 @@
-using System.Net;
+using System.Diagnostics;
+using System.ComponentModel;
 using System.Text.Json;
 using TableAnalyzer.Core;
 
-var builder = WebApplication.CreateBuilder(args);
-var app = builder.Build();
-if (!HasExplicitUrls(args))
+namespace TableAnalyzer.Gui;
+
+internal static class Program
 {
-    app.Urls.Add("http://localhost:5123");
+    [STAThread]
+    private static void Main()
+    {
+        ApplicationConfiguration.Initialize();
+        Application.Run(new MainForm());
+    }
 }
 
-app.MapGet("/", () =>
+internal sealed class MainForm : Form
 {
-    var settings = GuiSettingsStore.Load();
-    return Html(RenderPage(settings, null, null));
-});
+    private readonly PathInputRow _projectFolderRow;
+    private readonly PathInputRow _analysisFolderRow;
+    private readonly PathInputRow _analysisFileRow;
+    private readonly PathInputRow _outputRootRow;
+    private readonly Button _runButton = new();
+    private readonly Button _openReportButton = new();
+    private readonly ProgressBar _progressBar = new();
+    private readonly Label _progressLabel = new();
+    private readonly TextBox _resultTextBox = new();
+    private string _lastReportDirectory = "";
 
-app.MapPost("/analyze", async (HttpRequest request) =>
-{
-    var form = await request.ReadFormAsync();
-    var settings = new GuiSettings(
-        GetFormValue(form, "projectFolder"),
-        GetFormValue(form, "analysisFolder"),
-        GetFormValue(form, "analysisFile"),
-        GetFormValue(form, "outputRoot"));
-    GuiSettingsStore.Save(settings);
-
-    if (string.IsNullOrWhiteSpace(settings.ProjectFolder) ||
-        string.IsNullOrWhiteSpace(settings.AnalysisFolder) ||
-        string.IsNullOrWhiteSpace(settings.OutputRoot))
+    public MainForm()
     {
-        return Html(RenderPage(settings, null, "解析対象プロジェクトフォルダ、解析対象フォルダ、出力先フォルダは必須です。"));
+        Text = "Table Analyzer";
+        MinimumSize = new Size(860, 560);
+        StartPosition = FormStartPosition.CenterScreen;
+
+        var settings = GuiSettingsStore.Load();
+        _projectFolderRow = PathInputRow.ForFolder("解析対象プロジェクトフォルダ", settings.ProjectFolder);
+        _analysisFolderRow = PathInputRow.ForFolder("解析対象フォルダ", settings.AnalysisFolder);
+        _analysisFileRow = PathInputRow.ForFile("解析対象ファイル", settings.AnalysisFile);
+        _outputRootRow = PathInputRow.ForFolder("出力先フォルダ", settings.OutputRoot);
+
+        _projectFolderRow.PathSelected += path =>
+        {
+            if (string.IsNullOrWhiteSpace(_analysisFolderRow.PathValue))
+            {
+                _analysisFolderRow.PathValue = path;
+            }
+        };
+        _analysisFolderRow.PathSelected += path =>
+        {
+            if (string.IsNullOrWhiteSpace(_projectFolderRow.PathValue))
+            {
+                _projectFolderRow.PathValue = path;
+            }
+        };
+        _analysisFileRow.PathSelected += path =>
+        {
+            if (string.IsNullOrWhiteSpace(_analysisFolderRow.PathValue))
+            {
+                _analysisFolderRow.PathValue = Path.GetDirectoryName(path) ?? "";
+            }
+        };
+
+        ConfigureButtons();
+        ConfigureProgress();
+        ConfigureResultBox();
+        BuildLayout();
+
+        FormClosing += (_, _) => SaveSettings();
     }
 
-    try
+    private void ConfigureButtons()
     {
-        var run = new AnalysisRunner().Run(
-            new AnalysisRunRequest(
-                settings.ProjectFolder,
-                settings.AnalysisFolder,
-                settings.AnalysisFile,
-                settings.OutputRoot),
-            new AnalyzerConfiguration());
-        return Html(RenderPage(settings, run, null));
+        _runButton.Text = "解析を実行";
+        _runButton.AutoSize = true;
+        _runButton.MinimumSize = new Size(120, 36);
+        _runButton.Click += async (_, _) => await RunAnalysisAsync();
+
+        _openReportButton.Text = "出力先を開く";
+        _openReportButton.AutoSize = true;
+        _openReportButton.MinimumSize = new Size(120, 36);
+        _openReportButton.Enabled = false;
+        _openReportButton.Click += (_, _) => OpenLastReportDirectory();
     }
-    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+
+    private void ConfigureProgress()
     {
-        return Html(RenderPage(settings, null, ex.Message));
+        _progressBar.Dock = DockStyle.Fill;
+        _progressBar.Minimum = 0;
+        _progressBar.Maximum = 100;
+        _progressBar.Height = 18;
+
+        _progressLabel.AutoEllipsis = true;
+        _progressLabel.Dock = DockStyle.Fill;
+        _progressLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _progressLabel.Text = "待機中";
     }
-});
 
-app.Run();
+    private void ConfigureResultBox()
+    {
+        _resultTextBox.Dock = DockStyle.Fill;
+        _resultTextBox.Multiline = true;
+        _resultTextBox.ReadOnly = true;
+        _resultTextBox.ScrollBars = ScrollBars.Vertical;
+        _resultTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
+    }
 
-static IResult Html(string html)
-{
-    return Results.Content(html, "text/html; charset=utf-8");
+    private void BuildLayout()
+    {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Padding = new Padding(18)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var inputPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true
+        };
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.Controls.Add(_projectFolderRow, 0, 0);
+        inputPanel.Controls.Add(_analysisFolderRow, 0, 1);
+        inputPanel.Controls.Add(_analysisFileRow, 0, 2);
+        inputPanel.Controls.Add(_outputRootRow, 0, 3);
+
+        var buttonPanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = new Padding(0, 12, 0, 6)
+        };
+        buttonPanel.Controls.Add(_runButton);
+        buttonPanel.Controls.Add(_openReportButton);
+
+        var progressPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 2,
+            AutoSize = true,
+            Padding = new Padding(0, 0, 0, 10)
+        };
+        progressPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        progressPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        progressPanel.Controls.Add(_progressLabel, 0, 0);
+        progressPanel.Controls.Add(_progressBar, 0, 1);
+
+        root.Controls.Add(inputPanel, 0, 0);
+        root.Controls.Add(buttonPanel, 0, 1);
+        root.Controls.Add(progressPanel, 0, 2);
+        root.Controls.Add(_resultTextBox, 0, 3);
+        Controls.Add(root);
+    }
+
+    private async Task RunAnalysisAsync()
+    {
+        SaveSettings();
+        var request = new AnalysisRunRequest(
+            _projectFolderRow.PathValue,
+            _analysisFolderRow.PathValue,
+            string.IsNullOrWhiteSpace(_analysisFileRow.PathValue) ? null : _analysisFileRow.PathValue,
+            _outputRootRow.PathValue);
+
+        if (!ValidateRequest(request))
+        {
+            return;
+        }
+
+        SetBusy(true);
+        _lastReportDirectory = "";
+        _openReportButton.Enabled = false;
+        _resultTextBox.Clear();
+        _progressBar.Value = 0;
+        _progressLabel.Text = "解析準備中";
+
+        var progress = new Progress<AnalysisProgress>(UpdateProgress);
+        try
+        {
+            var run = await Task.Run(() => new AnalysisRunner().Run(request, new AnalyzerConfiguration(), progress));
+            _lastReportDirectory = run.ReportDirectory;
+            _openReportButton.Enabled = true;
+            _progressBar.Value = 100;
+            _progressLabel.Text = "完了";
+            _resultTextBox.Text = BuildResultText(run);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        {
+            _progressLabel.Text = "エラー";
+            _resultTextBox.Text = ex.Message;
+            MessageBox.Show(this, ex.Message, "解析できませんでした", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private bool ValidateRequest(AnalysisRunRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.ProjectFolder) ||
+            string.IsNullOrWhiteSpace(request.AnalysisFolder) ||
+            string.IsNullOrWhiteSpace(request.OutputRoot))
+        {
+            MessageBox.Show(this, "解析対象プロジェクトフォルダ、解析対象フォルダ、出力先フォルダは必須です。", "入力エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void UpdateProgress(AnalysisProgress progress)
+    {
+        var percent = progress.Total <= 0
+            ? 0
+            : Math.Clamp((int)Math.Floor(progress.Completed * 100.0 / progress.Total), 0, 100);
+        _progressBar.Value = percent;
+
+        var stage = progress.Stage switch
+        {
+            "indexing" => "索引作成",
+            "analyzing" => "解析",
+            _ => "処理"
+        };
+        var file = string.IsNullOrWhiteSpace(progress.CurrentFile)
+            ? ""
+            : $"  {progress.CurrentFile}";
+        _progressLabel.Text = $"{stage}: {progress.Completed}/{progress.Total} ({percent}%){file}";
+    }
+
+    private void SetBusy(bool busy)
+    {
+        _runButton.Enabled = !busy;
+        _projectFolderRow.Enabled = !busy;
+        _analysisFolderRow.Enabled = !busy;
+        _analysisFileRow.Enabled = !busy;
+        _outputRootRow.Enabled = !busy;
+        Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
+    }
+
+    private void OpenLastReportDirectory()
+    {
+        if (string.IsNullOrWhiteSpace(_lastReportDirectory) || !Directory.Exists(_lastReportDirectory))
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = _lastReportDirectory,
+            UseShellExecute = true
+        });
+    }
+
+    private void SaveSettings()
+    {
+        GuiSettingsStore.Save(new GuiSettings(
+            _projectFolderRow.PathValue,
+            _analysisFolderRow.PathValue,
+            _analysisFileRow.PathValue,
+            _outputRootRow.PathValue));
+    }
+
+    private static string BuildResultText(AnalysisRunResult run)
+    {
+        return string.Join(Environment.NewLine,
+        [
+            $"出力先: {run.ReportDirectory}",
+            $"解析ファイル数: {run.AnalysisFiles.Count}",
+            $"索引ファイル数: {run.ContextFiles.Count}",
+            $"SQLスニペット: {run.AnalysisResult.SqlSnippets.Count}",
+            $"テーブル利用: {run.AnalysisResult.TableUsages.Count}",
+            $"動的SQL: {run.AnalysisResult.DynamicSql.Count}",
+            $"未解決SQL: {run.AnalysisResult.UnresolvedSql.Count}",
+            $"警告: {run.AnalysisResult.Warnings.Count}"
+        ]);
+    }
 }
 
-static string GetFormValue(IFormCollection form, string key)
+internal sealed class PathInputRow : UserControl
 {
-    return form.TryGetValue(key, out var value) ? value.ToString().Trim() : "";
-}
+    private readonly TextBox _textBox = new();
+    private readonly Button _browseButton = new();
+    private readonly Button? _clearButton;
+    private readonly bool _isFolder;
 
-static bool HasExplicitUrls(string[] args)
-{
-    return args.Any(arg => string.Equals(arg, "--urls", StringComparison.OrdinalIgnoreCase) ||
-                           arg.StartsWith("--urls=", StringComparison.OrdinalIgnoreCase)) ||
-           !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")) ||
-           !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DOTNET_URLS"));
-}
+    public event Action<string>? PathSelected;
 
-static string RenderPage(GuiSettings settings, AnalysisRunResult? result, string? error)
-{
-    var projectFolder = WebUtility.HtmlEncode(settings.ProjectFolder);
-    var analysisFolder = WebUtility.HtmlEncode(settings.AnalysisFolder);
-    var analysisFile = WebUtility.HtmlEncode(settings.AnalysisFile);
-    var outputRoot = WebUtility.HtmlEncode(settings.OutputRoot);
-    var status = RenderStatus(result, error);
-
-    return $$"""
-        <!doctype html>
-        <html lang="ja">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>Table Analyzer</title>
-          <style>
-            :root {
-              color-scheme: light;
-              --bg: #f5f7fa;
-              --panel: #ffffff;
-              --text: #1d2430;
-              --muted: #667085;
-              --line: #d8dee8;
-              --accent: #0f766e;
-              --accent-hover: #115e59;
-              --danger: #b42318;
-              --ok: #027a48;
-            }
-            * {
-              box-sizing: border-box;
-            }
-            body {
-              margin: 0;
-              font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-              background: var(--bg);
-              color: var(--text);
-            }
-            main {
-              width: min(980px, calc(100vw - 32px));
-              margin: 32px auto;
-            }
-            h1 {
-              margin: 0 0 20px;
-              font-size: 28px;
-              line-height: 1.25;
-              font-weight: 700;
-            }
-            form,
-            .status {
-              background: var(--panel);
-              border: 1px solid var(--line);
-              border-radius: 8px;
-              padding: 24px;
-            }
-            form {
-              display: grid;
-              gap: 18px;
-            }
-            label {
-              display: grid;
-              gap: 8px;
-              font-size: 14px;
-              font-weight: 650;
-            }
-            input {
-              width: 100%;
-              min-height: 42px;
-              border: 1px solid #b8c2d0;
-              border-radius: 6px;
-              padding: 9px 11px;
-              font: inherit;
-              background: #fff;
-              color: var(--text);
-            }
-            input:focus {
-              outline: 3px solid rgba(15, 118, 110, .18);
-              border-color: var(--accent);
-            }
-            button {
-              justify-self: start;
-              min-height: 42px;
-              border: 0;
-              border-radius: 6px;
-              padding: 10px 18px;
-              font: inherit;
-              font-weight: 700;
-              color: #fff;
-              background: var(--accent);
-              cursor: pointer;
-            }
-            button:hover {
-              background: var(--accent-hover);
-            }
-            .status {
-              margin-top: 18px;
-            }
-            .status h2 {
-              margin: 0 0 12px;
-              font-size: 18px;
-            }
-            .error {
-              border-color: rgba(180, 35, 24, .35);
-              color: var(--danger);
-            }
-            .success {
-              border-color: rgba(2, 122, 72, .35);
-            }
-            dl {
-              display: grid;
-              grid-template-columns: max-content 1fr;
-              gap: 8px 18px;
-              margin: 0;
-            }
-            dt {
-              color: var(--muted);
-            }
-            dd {
-              margin: 0;
-              overflow-wrap: anywhere;
-            }
-          </style>
-        </head>
-        <body>
-          <main>
-            <h1>Table Analyzer</h1>
-            <form method="post" action="/analyze">
-              <label>
-                解析対象プロジェクトフォルダ
-                <input name="projectFolder" value="{{projectFolder}}" required>
-              </label>
-              <label>
-                解析対象フォルダ
-                <input name="analysisFolder" value="{{analysisFolder}}" required>
-              </label>
-              <label>
-                解析対象ファイル
-                <input name="analysisFile" value="{{analysisFile}}">
-              </label>
-              <label>
-                出力先フォルダ
-                <input name="outputRoot" value="{{outputRoot}}" required>
-              </label>
-              <button type="submit">解析を実行</button>
-            </form>
-            {{status}}
-          </main>
-        </body>
-        </html>
-        """;
-}
-
-static string RenderStatus(AnalysisRunResult? result, string? error)
-{
-    if (!string.IsNullOrWhiteSpace(error))
+    private PathInputRow(string label, string value, bool isFolder)
     {
-        return $$"""
-            <section class="status error">
-              <h2>解析できませんでした</h2>
-              <div>{{WebUtility.HtmlEncode(error)}}</div>
-            </section>
-            """;
+        _isFolder = isFolder;
+        Dock = DockStyle.Top;
+        AutoSize = true;
+        Padding = new Padding(0, 0, 0, 10);
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = isFolder ? 3 : 4,
+            RowCount = 1
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        if (!isFolder)
+        {
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        }
+
+        var labelControl = new Label
+        {
+            Text = label,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
+        };
+
+        _textBox.Text = value;
+        _textBox.Dock = DockStyle.Fill;
+        _textBox.AllowDrop = true;
+        _textBox.DragEnter += TextBoxDragEnter;
+        _textBox.DragDrop += TextBoxDragDrop;
+
+        _browseButton.Text = "選択";
+        _browseButton.Dock = DockStyle.Fill;
+        _browseButton.Click += (_, _) => Browse();
+
+        layout.Controls.Add(labelControl, 0, 0);
+        layout.Controls.Add(_textBox, 1, 0);
+        layout.Controls.Add(_browseButton, 2, 0);
+
+        if (!isFolder)
+        {
+            _clearButton = new Button
+            {
+                Text = "クリア",
+                Dock = DockStyle.Fill
+            };
+            _clearButton.Click += (_, _) => PathValue = "";
+            layout.Controls.Add(_clearButton, 3, 0);
+        }
+
+        Controls.Add(layout);
     }
 
-    if (result is null)
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string PathValue
     {
-        return "";
+        get => _textBox.Text.Trim();
+        set => _textBox.Text = value.Trim();
     }
 
-    return $$"""
-        <section class="status success">
-          <h2>解析が完了しました</h2>
-          <dl>
-            <dt>出力先</dt><dd>{{WebUtility.HtmlEncode(result.ReportDirectory)}}</dd>
-            <dt>解析ファイル数</dt><dd>{{result.AnalysisFiles.Count}}</dd>
-            <dt>索引ファイル数</dt><dd>{{result.ContextFiles.Count}}</dd>
-            <dt>SQLスニペット</dt><dd>{{result.AnalysisResult.SqlSnippets.Count}}</dd>
-            <dt>テーブル利用</dt><dd>{{result.AnalysisResult.TableUsages.Count}}</dd>
-            <dt>動的SQL</dt><dd>{{result.AnalysisResult.DynamicSql.Count}}</dd>
-            <dt>未解決SQL</dt><dd>{{result.AnalysisResult.UnresolvedSql.Count}}</dd>
-            <dt>警告</dt><dd>{{result.AnalysisResult.Warnings.Count}}</dd>
-          </dl>
-        </section>
-        """;
+    public static PathInputRow ForFolder(string label, string value)
+    {
+        return new PathInputRow(label, value, isFolder: true);
+    }
+
+    public static PathInputRow ForFile(string label, string value)
+    {
+        return new PathInputRow(label, value, isFolder: false);
+    }
+
+    private void Browse()
+    {
+        if (_isFolder)
+        {
+            using var dialog = new FolderBrowserDialog
+            {
+                SelectedPath = Directory.Exists(PathValue) ? PathValue : "",
+                UseDescriptionForTitle = true
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                PathValue = dialog.SelectedPath;
+                PathSelected?.Invoke(PathValue);
+            }
+
+            return;
+        }
+
+        using var fileDialog = new OpenFileDialog
+        {
+            CheckFileExists = true,
+            Filter = "C# / Razor Pages (*.cs;*.cshtml.cs)|*.cs;*.cshtml.cs|All files (*.*)|*.*",
+            FileName = File.Exists(PathValue) ? PathValue : ""
+        };
+        if (fileDialog.ShowDialog(this) == DialogResult.OK)
+        {
+            PathValue = fileDialog.FileName;
+            PathSelected?.Invoke(PathValue);
+        }
+    }
+
+    private void TextBoxDragEnter(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        {
+            e.Effect = DragDropEffects.Copy;
+        }
+    }
+
+    private void TextBoxDragDrop(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
+        {
+            return;
+        }
+
+        var path = files[0];
+        if (_isFolder && File.Exists(path))
+        {
+            path = Path.GetDirectoryName(path) ?? path;
+        }
+
+        PathValue = path;
+        PathSelected?.Invoke(PathValue);
+    }
 }
 
 internal sealed record GuiSettings(
