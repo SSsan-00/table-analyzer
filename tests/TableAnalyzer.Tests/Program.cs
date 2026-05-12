@@ -15,6 +15,10 @@ var tests = new (string Name, Action Body)[]
     ("analyzer follows helper method from context files", Tests.AnalyzerFollowsHelperMethodFromContextFiles),
     ("analyzer resolves helper method by using namespace", Tests.AnalyzerResolvesHelperMethodByUsingNamespace),
     ("analyzer resolves helper method overload by argument type", Tests.AnalyzerResolvesHelperMethodOverloadByArgumentType),
+    ("analyzer resolves member constants and properties", Tests.AnalyzerResolvesMemberConstantsAndProperties),
+    ("analyzer resolves branch and loop assignment candidates", Tests.AnalyzerResolvesBranchAndLoopAssignmentCandidates),
+    ("analyzer resolves simple object state", Tests.AnalyzerResolvesSimpleObjectState),
+    ("analyzer extracts dynamic table placeholders with t-sql ast", Tests.AnalyzerExtractsDynamicTablePlaceholdersWithTsqlAst),
     ("analyzer emits candidates from conditional helper method", Tests.AnalyzerEmitsCandidatesFromConditionalHelperMethod),
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
@@ -24,6 +28,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer ignores source local execute method", Tests.AnalyzerIgnoresSourceLocalExecuteMethod),
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
+    ("runner writes xlsx only when requested", Tests.RunnerWritesXlsxOnlyWhenRequested),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -308,6 +313,116 @@ internal static class Tests
         Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
     }
 
+    public static void AnalyzerResolvesMemberConstantsAndProperties()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                private const string Schema = "dbo";
+                private static readonly string Table = "Users";
+                private string SelectPrefix => "SELECT * FROM " + Schema + ".";
+
+                void Run()
+                {
+                    db.Query(SelectPrefix + Table);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesBranchAndLoopAssignmentCandidates()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/OrderService.cs", """
+            class OrderService
+            {
+                void Run(bool archive, string[] names)
+                {
+                    var table = "Orders";
+                    if (archive)
+                    {
+                        table = "OrdersArchive";
+                    }
+                    else
+                    {
+                        table = "OrdersCurrent";
+                    }
+
+                    foreach (var name in names)
+                    {
+                        table = "OrdersLoop";
+                    }
+
+                    db.Query("SELECT * FROM dbo." + table);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/OrderService.cs")], new AnalyzerConfiguration());
+        var names = result.TableUsages.Select(row => row.FullName).ToArray();
+
+        Assert.Equal(4, result.TableUsages.Count);
+        Assert.Contains(names, "dbo.Orders");
+        Assert.Contains(names, "dbo.OrdersArchive");
+        Assert.Contains(names, "dbo.OrdersCurrent");
+        Assert.Contains(names, "dbo.OrdersLoop");
+        Assert.All(result.TableUsages, row => Assert.Equal("probable", row.Confidence));
+    }
+
+    public static void AnalyzerResolvesSimpleObjectState()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    var target = new SqlTarget { Table = "Users" };
+                    target.Schema = "dbo";
+                    db.Query("SELECT * FROM " + target.Schema + "." + target.Table);
+                }
+            }
+
+            class SqlTarget
+            {
+                public string Schema { get; set; }
+                public string Table { get; set; }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerExtractsDynamicTablePlaceholdersWithTsqlAst()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run(string table)
+                {
+                    db.Query("SELECT * FROM dbo." + table);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.{table}", result.TableUsages[0].FullName);
+        Assert.Equal("Unknown", result.TableUsages[0].ObjectType);
+        Assert.Equal("dynamic", result.TableUsages[0].Confidence);
+    }
+
     public static void AnalyzerEmitsCandidatesFromConditionalHelperMethod()
     {
         using var temp = TempWorkspace.Create();
@@ -576,6 +691,39 @@ internal static class Tests
             Assert.Equal("dbo.TargetUsers", run.AnalysisResult.TableUsages[0].FullName);
             Assert.True(!run.AnalysisResult.TableUsages.Any(row => row.FullName == "dbo.OtherUsers"));
             Assert.True(File.Exists(Path.Combine(run.ReportDirectory, "table-usages.csv")));
+        }
+        finally
+        {
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+        }
+    }
+
+    public static void RunnerWritesXlsxOnlyWhenRequested()
+    {
+        using var temp = TempWorkspace.Create();
+        temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    db.Query("SELECT * FROM dbo.Users");
+                }
+            }
+            """);
+        var output = Path.Combine(Path.GetTempPath(), "table-analyzer-output-tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var run = new AnalysisRunner().Run(
+                new AnalysisRunRequest(temp.Root, temp.Root, null, output, ReportOutputFormat.Xlsx),
+                new AnalyzerConfiguration(),
+                new DateTime(2026, 5, 12, 9, 0, 0));
+
+            Assert.True(File.Exists(Path.Combine(run.ReportDirectory, "table-analysis.xlsx")));
+            Assert.True(!File.Exists(Path.Combine(run.ReportDirectory, "table-usages.csv")));
         }
         finally
         {

@@ -1,6 +1,6 @@
 # Table Analyzer
 
-Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVに出力するツールです。CLI と Windows GUI を用意しています。
+Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVまたはXLSXに出力するツールです。CLI と Windows GUI を用意しています。
 
 C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本文は SQL Server / T-SQL 前提で AST 解析します。コメント内の `db.Query(...)` のような文字列は実行コードとして扱いません。
 
@@ -20,16 +20,20 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - SQL実行メソッドの引数からSQL文字列を追跡
 - SQL実行メソッド検出では、SemanticModelで解決できる非SQLの通常メソッド呼び出しを除外
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
-- `if` / 三項演算子 / switch式などから候補を複数出力
+- ローカル変数、クラス定数、`static readonly`、フィールド初期化、プロパティ、単純なオブジェクト初期化/プロパティ代入を追跡
+- `if` / ループ内代入 / 三項演算子 / switch式などから候補を複数出力
 - T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
+- 動的テーブル名の `{table}` 形式プレースホルダを保持したままT-SQL AST解析
 - UTF-8 / Shift-JIS(CP932) のソースを読み取り
-- CSVは UTF-8 BOM付きで出力
+- 出力形式は CSV または XLSX を選択可能。CSVは UTF-8 BOM付きで出力
 
 ## 重要な方針
 
 解析対象プロジェクトには一切書き込みません。
 
 出力先フォルダは、解析対象プロジェクトフォルダや解析対象フォルダの外側を指定してください。入力配下を出力先にするとエラーになります。
+
+外部ライブラリ内の関数本体、環境変数、DB設定値など実行時にしか決まらない値は、静的解析では確定扱いにしません。解決不能または動的候補として出力します。
 
 ## WinForms GUIの使い方
 
@@ -44,7 +48,8 @@ dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 - 解析対象プロジェクトフォルダ: メソッド解決用に索引化するプロジェクトルート
 - 解析対象フォルダ: 実際にCSV出力対象として解析するフォルダ
 - 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
-- 出力先フォルダ: CSVレポートの出力先
+- 出力先フォルダ: レポートの出力先
+- 出力形式: `csv` または `xlsx`
 
 各パスは `選択` ボタンでフォルダ/ファイル選択できます。各入力欄の `クリア` ボタンで空に戻せます。テキストボックスへのドラッグ&ドロップにも対応しています。
 
@@ -59,7 +64,8 @@ dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
   analyze \
   --project-folder /path/to/MyApp \
   --analysis-folder /path/to/MyApp/Pages \
-  --out /path/to/table-analysis
+  --out /path/to/table-analysis \
+  --format csv
 ```
 
 単一ファイルだけ解析しつつ、プロジェクト内の別ファイルにある helper メソッドもリンクする場合:
@@ -70,7 +76,8 @@ dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
   --project-folder /path/to/MyApp \
   --analysis-folder /path/to/MyApp/Pages \
   --analysis-file /path/to/MyApp/Pages/Users/Index.cshtml.cs \
-  --out /path/to/table-analysis
+  --out /path/to/table-analysis \
+  --format xlsx
 ```
 
 ビルド済みDLLを実行する場合:
@@ -80,7 +87,8 @@ dotnet src/TableAnalyzer.Cli/bin/Release/net9.0/TableAnalyzer.Cli.dll \
   analyze \
   --project-folder /path/to/MyApp \
   --analysis-folder /path/to/MyApp/Pages \
-  --out /path/to/table-analysis
+  --out /path/to/table-analysis \
+  --format csv
 ```
 
 従来互換の短縮指定も使えます。この場合、`--input` がプロジェクトフォルダ兼解析対象になります。
@@ -89,7 +97,8 @@ dotnet src/TableAnalyzer.Cli/bin/Release/net9.0/TableAnalyzer.Cli.dll \
 dotnet src/TableAnalyzer.Cli/bin/Release/net9.0/TableAnalyzer.Cli.dll \
   analyze \
   --input /path/to/project-or-file \
-  --out /path/to/table-analysis
+  --out /path/to/table-analysis \
+  --format xlsx
 ```
 
 解析中は標準エラーに進捗が表示されます。
@@ -140,6 +149,8 @@ C:\work\table-analysis\20260512-143012_Pages\
 
 ## 出力ファイル
 
+CSV形式を選んだ場合:
+
 ```text
 table-usages.csv      SQL内のテーブル/ビュー/Procedure出現ごとの詳細
 table-summary.csv     FullName単位の集計
@@ -148,6 +159,12 @@ unresolved-sql.csv    SQL文字列やテーブル名を解決できなかった�
 sql-snippets.csv      SQL本文と正規化SQL
 warnings.csv          読み込み失敗などの警告
 run-summary.txt       実行サマリ
+```
+
+XLSX形式を選んだ場合:
+
+```text
+table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 ```
 
 ## `INSERT ... SELECT` の出力
@@ -192,7 +209,8 @@ WinForms GUIを起動する場合:
 .\bootstrap.ps1 analyze `
   -ProjectFolder "C:\src\MyApp" `
   -AnalysisFolder "C:\src\MyApp\Pages" `
-  -Out "C:\work\table-analysis"
+  -Out "C:\work\table-analysis" `
+  -Format csv
 ```
 
 単一ファイルだけ解析する場合:
@@ -202,7 +220,8 @@ WinForms GUIを起動する場合:
   -ProjectFolder "C:\src\MyApp" `
   -AnalysisFolder "C:\src\MyApp\Pages" `
   -AnalysisFile "C:\src\MyApp\Pages\Users\Index.cshtml.cs" `
-  -Out "C:\work\table-analysis"
+  -Out "C:\work\table-analysis" `
+  -Format xlsx
 ```
 
 既存の `src` を上書きして展開したい場合:

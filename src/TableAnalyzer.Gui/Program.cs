@@ -21,6 +21,7 @@ internal sealed class MainForm : Form
     private readonly PathInputRow _analysisFolderRow;
     private readonly PathInputRow _analysisFileRow;
     private readonly PathInputRow _outputRootRow;
+    private readonly ComboBox _outputFormatComboBox = new();
     private readonly Button _runButton = new();
     private readonly Button _openReportButton = new();
     private readonly ProgressBar _progressBar = new();
@@ -39,6 +40,7 @@ internal sealed class MainForm : Form
         _analysisFolderRow = PathInputRow.ForFolder("解析対象フォルダ", settings.AnalysisFolder);
         _analysisFileRow = PathInputRow.ForFile("解析対象ファイル", settings.AnalysisFile);
         _outputRootRow = PathInputRow.ForFolder("出力先フォルダ", settings.OutputRoot);
+        ConfigureOutputFormat(settings.OutputFormat);
 
         _projectFolderRow.PathSelected += path =>
         {
@@ -82,6 +84,15 @@ internal sealed class MainForm : Form
         _openReportButton.MinimumSize = new Size(120, 36);
         _openReportButton.Enabled = false;
         _openReportButton.Click += (_, _) => OpenLastReportDirectory();
+    }
+
+    private void ConfigureOutputFormat(string value)
+    {
+        _outputFormatComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _outputFormatComboBox.Items.AddRange(["csv", "xlsx"]);
+        _outputFormatComboBox.SelectedItem = string.Equals(value, "xlsx", StringComparison.OrdinalIgnoreCase)
+            ? "xlsx"
+            : "csv";
     }
 
     private void ConfigureProgress()
@@ -130,10 +141,12 @@ internal sealed class MainForm : Form
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.Controls.Add(_projectFolderRow, 0, 0);
         inputPanel.Controls.Add(_analysisFolderRow, 0, 1);
         inputPanel.Controls.Add(_analysisFileRow, 0, 2);
         inputPanel.Controls.Add(_outputRootRow, 0, 3);
+        inputPanel.Controls.Add(BuildOutputFormatRow(), 0, 4);
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -172,7 +185,8 @@ internal sealed class MainForm : Form
             _projectFolderRow.PathValue,
             _analysisFolderRow.PathValue,
             string.IsNullOrWhiteSpace(_analysisFileRow.PathValue) ? null : _analysisFileRow.PathValue,
-            _outputRootRow.PathValue);
+            _outputRootRow.PathValue,
+            SelectedOutputFormat);
 
         if (!ValidateRequest(request))
         {
@@ -247,6 +261,7 @@ internal sealed class MainForm : Form
         _analysisFolderRow.Enabled = !busy;
         _analysisFileRow.Enabled = !busy;
         _outputRootRow.Enabled = !busy;
+        _outputFormatComboBox.Enabled = !busy;
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
     }
 
@@ -270,7 +285,8 @@ internal sealed class MainForm : Form
             _projectFolderRow.PathValue,
             _analysisFolderRow.PathValue,
             _analysisFileRow.PathValue,
-            _outputRootRow.PathValue));
+            _outputRootRow.PathValue,
+            _outputFormatComboBox.SelectedItem?.ToString() ?? "csv"));
     }
 
     private static string BuildResultText(AnalysisRunResult run)
@@ -278,6 +294,7 @@ internal sealed class MainForm : Form
         return string.Join(Environment.NewLine,
         [
             $"出力先: {run.ReportDirectory}",
+            $"出力形式: {run.OutputFormat.ToString().ToLowerInvariant()}",
             $"解析ファイル数: {run.AnalysisFiles.Count}",
             $"索引ファイル数: {run.ContextFiles.Count}",
             $"SQLスニペット: {run.AnalysisResult.SqlSnippets.Count}",
@@ -286,6 +303,37 @@ internal sealed class MainForm : Form
             $"未解決SQL: {run.AnalysisResult.UnresolvedSql.Count}",
             $"警告: {run.AnalysisResult.Warnings.Count}"
         ]);
+    }
+
+    private ReportOutputFormat SelectedOutputFormat =>
+        string.Equals(_outputFormatComboBox.SelectedItem?.ToString(), "xlsx", StringComparison.OrdinalIgnoreCase)
+            ? ReportOutputFormat.Xlsx
+            : ReportOutputFormat.Csv;
+
+    private Control BuildOutputFormatRow()
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(0, 0, 0, 10)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+
+        var label = new Label
+        {
+            Text = "出力形式",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _outputFormatComboBox.Dock = DockStyle.Fill;
+
+        layout.Controls.Add(label, 0, 0);
+        layout.Controls.Add(_outputFormatComboBox, 1, 0);
+        return layout;
     }
 }
 
@@ -426,7 +474,8 @@ internal sealed record GuiSettings(
     string ProjectFolder = "",
     string AnalysisFolder = "",
     string AnalysisFile = "",
-    string OutputRoot = "");
+    string OutputRoot = "",
+    string OutputFormat = "csv");
 
 internal static class GuiSettingsStore
 {

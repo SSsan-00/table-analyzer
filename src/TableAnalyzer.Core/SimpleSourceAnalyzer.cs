@@ -128,7 +128,7 @@ public sealed class SimpleSourceAnalyzer
         AnalysisResult result,
         IdSequence ids)
     {
-        var evaluator = new ExpressionEvaluator(methods, configuration);
+        var evaluator = new ExpressionEvaluator(methods, semanticContext, configuration);
         foreach (var invocation in FindSqlInvocations(root, configuration, semanticContext).OrderBy(invocation => invocation.Syntax.SpanStart))
         {
             var sqlId = ids.NextSqlId();
@@ -597,6 +597,7 @@ public sealed class SimpleSourceAnalyzer
 
     private sealed class ExpressionEvaluator(
         MethodIndex methods,
+        SemanticAnalysisContext semanticContext,
         AnalyzerConfiguration configuration)
     {
         public SymbolicValue Evaluate(ExpressionSyntax expression, MethodDeclarationSyntax? scope)
@@ -631,6 +632,8 @@ public sealed class SimpleSourceAnalyzer
                     ], "concatenation"),
                 IdentifierNameSyntax identifier =>
                     EvaluateIdentifier(identifier, scope, parameters, depth, activeMethods),
+                MemberAccessExpressionSyntax memberAccess =>
+                    EvaluateMemberAccess(memberAccess, scope, parameters, depth, activeMethods),
                 InvocationExpressionSyntax invocation =>
                     EvaluateInvocation(invocation, scope, parameters, depth, activeMethods),
                 ConditionalExpressionSyntax conditional =>
@@ -658,17 +661,50 @@ public sealed class SimpleSourceAnalyzer
                 return parameterValue;
             }
 
-            var localExpression = FindLocalValue(scope, name, identifier.SpanStart);
-            if (localExpression is not null)
+            var localExpressions = FindLocalValues(scope, name, identifier.SpanStart);
+            if (localExpressions.Count > 0)
             {
-                var value = Evaluate(localExpression, scope, parameters, depth, activeMethods);
+                var value = CombineAlternatives(
+                    localExpressions.Select(expression => Evaluate(expression, scope, parameters, depth, activeMethods)).ToArray(),
+                    name);
                 return value with
                 {
                     ResolutionPath = string.IsNullOrEmpty(value.ResolutionPath) ? name : $"{name} -> {value.ResolutionPath}"
                 };
             }
 
+            if (TryEvaluateSymbol(identifier, scope, parameters, depth, activeMethods, out var symbolValue))
+            {
+                return symbolValue;
+            }
+
             return Unknown(identifier);
+        }
+
+        private SymbolicValue EvaluateMemberAccess(
+            MemberAccessExpressionSyntax memberAccess,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            if (memberAccess.Expression is IdentifierNameSyntax receiver)
+            {
+                var memberExpressions = FindObjectMemberValues(scope, receiver.Identifier.ValueText, memberAccess.Name.Identifier.ValueText, memberAccess.SpanStart);
+                if (memberExpressions.Count > 0)
+                {
+                    return CombineAlternatives(
+                        memberExpressions.Select(expression => Evaluate(expression, scope, parameters, depth, activeMethods)).ToArray(),
+                        memberAccess.ToString());
+                }
+            }
+
+            if (TryEvaluateSymbol(memberAccess, scope, parameters, depth, activeMethods, out var symbolValue))
+            {
+                return symbolValue;
+            }
+
+            return Unknown(memberAccess);
         }
 
         private SymbolicValue EvaluateInvocation(
@@ -808,34 +844,238 @@ public sealed class SimpleSourceAnalyzer
             }
         }
 
-        private static ExpressionSyntax? FindLocalValue(MethodDeclarationSyntax? scope, string name, int beforePosition)
+        private static IReadOnlyList<ExpressionSyntax> FindLocalValues(MethodDeclarationSyntax? scope, string name, int beforePosition)
         {
             if (scope?.Body is null)
             {
-                return null;
+                return [];
             }
 
-            ExpressionSyntax? value = null;
-            foreach (var declarator in scope.Body.DescendantNodes().OfType<VariableDeclaratorSyntax>()
-                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == name))
+            ExpressionSyntax? current = null;
+            var branched = new List<ExpressionSyntax>();
+            foreach (var assignment in EnumerateLocalAssignments(scope.Body, name, beforePosition))
             {
-                if (declarator.Initializer?.Value is not null)
+                if (assignment.IsConditional)
                 {
-                    value = declarator.Initializer.Value;
+                    branched.Add(assignment.Expression);
+                    continue;
+                }
+
+                current = assignment.Expression;
+                branched.Clear();
+            }
+
+            var values = new List<ExpressionSyntax>();
+            if (current is not null)
+            {
+                values.Add(current);
+            }
+
+            values.AddRange(branched);
+            return values
+                .Distinct()
+                .ToArray();
+        }
+
+        private static IReadOnlyList<ExpressionSyntax> FindObjectMemberValues(MethodDeclarationSyntax? scope, string objectName, string memberName, int beforePosition)
+        {
+            if (scope?.Body is null)
+            {
+                return [];
+            }
+
+            var values = new List<ExpressionSyntax>();
+            foreach (var declarator in scope.Body.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == objectName))
+            {
+                if (declarator.Initializer?.Value is ObjectCreationExpressionSyntax creation &&
+                    creation.Initializer is not null)
+                {
+                    values.AddRange(GetObjectInitializerMemberValues(creation.Initializer, memberName));
                 }
             }
 
             foreach (var assignment in scope.Body.DescendantNodes().OfType<AssignmentExpressionSyntax>()
                          .Where(item => item.SpanStart < beforePosition && item.IsKind(SyntaxKind.SimpleAssignmentExpression)))
             {
-                if (assignment.Left is IdentifierNameSyntax identifier &&
-                    string.Equals(identifier.Identifier.ValueText, name, StringComparison.Ordinal))
+                if (assignment.Left is MemberAccessExpressionSyntax memberAccess &&
+                    memberAccess.Expression is IdentifierNameSyntax receiver &&
+                    string.Equals(receiver.Identifier.ValueText, objectName, StringComparison.Ordinal) &&
+                    string.Equals(memberAccess.Name.Identifier.ValueText, memberName, StringComparison.Ordinal))
                 {
-                    value = assignment.Right;
+                    values.Add(assignment.Right);
                 }
             }
 
-            return value;
+            return values.ToArray();
+        }
+
+        private static IEnumerable<ExpressionSyntax> GetObjectInitializerMemberValues(InitializerExpressionSyntax initializer, string memberName)
+        {
+            foreach (var expression in initializer.Expressions.OfType<AssignmentExpressionSyntax>())
+            {
+                var name = expression.Left switch
+                {
+                    IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                    MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.ValueText,
+                    _ => ""
+                };
+                if (string.Equals(name, memberName, StringComparison.Ordinal))
+                {
+                    yield return expression.Right;
+                }
+            }
+        }
+
+        private static IEnumerable<TrackedAssignment> EnumerateLocalAssignments(BlockSyntax body, string name, int beforePosition)
+        {
+            foreach (var declarator in body.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == name && item.Initializer?.Value is not null)
+                         .OrderBy(item => item.SpanStart))
+            {
+                yield return new TrackedAssignment(declarator.Initializer!.Value, IsConditionalAssignment(body, declarator));
+            }
+
+            foreach (var assignment in body.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                         .OrderBy(item => item.SpanStart))
+            {
+                if (assignment.Left is IdentifierNameSyntax identifier &&
+                    string.Equals(identifier.Identifier.ValueText, name, StringComparison.Ordinal))
+                {
+                    yield return new TrackedAssignment(assignment.Right, IsConditionalAssignment(body, assignment));
+                }
+            }
+        }
+
+        private static bool IsConditionalAssignment(BlockSyntax body, SyntaxNode node)
+        {
+            return node.Ancestors()
+                .TakeWhile(ancestor => ancestor != body)
+                .Any(ancestor => ancestor is IfStatementSyntax or ElseClauseSyntax or SwitchStatementSyntax or SwitchExpressionSyntax
+                    or ForStatementSyntax or ForEachStatementSyntax or WhileStatementSyntax or DoStatementSyntax);
+        }
+
+        private bool TryEvaluateSymbol(
+            ExpressionSyntax expression,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods,
+            out SymbolicValue value)
+        {
+            var symbol = semanticContext.GetModel(expression.SyntaxTree).GetSymbolInfo(expression).Symbol;
+            if (symbol is IFieldSymbol field)
+            {
+                return TryEvaluateField(field, scope, parameters, depth, activeMethods, out value);
+            }
+
+            if (symbol is IPropertySymbol property)
+            {
+                return TryEvaluateProperty(property, scope, parameters, depth, activeMethods, out value);
+            }
+
+            if (symbol is ILocalSymbol { HasConstantValue: true, ConstantValue: string constant })
+            {
+                value = Literal(constant);
+                return true;
+            }
+
+            value = null!;
+            return false;
+        }
+
+        private bool TryEvaluateField(
+            IFieldSymbol field,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods,
+            out SymbolicValue value)
+        {
+            if (field.HasConstantValue && field.ConstantValue is string constant)
+            {
+                value = Literal(constant);
+                return true;
+            }
+
+            foreach (var syntaxReference in field.DeclaringSyntaxReferences)
+            {
+                if (syntaxReference.GetSyntax() is not VariableDeclaratorSyntax declarator ||
+                    declarator.Initializer?.Value is null)
+                {
+                    continue;
+                }
+
+                value = Evaluate(declarator.Initializer.Value, scope, parameters, depth, activeMethods);
+                return true;
+            }
+
+            value = null!;
+            return false;
+        }
+
+        private bool TryEvaluateProperty(
+            IPropertySymbol property,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods,
+            out SymbolicValue value)
+        {
+            foreach (var syntaxReference in property.DeclaringSyntaxReferences)
+            {
+                if (syntaxReference.GetSyntax() is not PropertyDeclarationSyntax declaration)
+                {
+                    continue;
+                }
+
+                if (declaration.Initializer?.Value is not null)
+                {
+                    value = Evaluate(declaration.Initializer.Value, scope, parameters, depth, activeMethods);
+                    return true;
+                }
+
+                if (declaration.ExpressionBody?.Expression is not null)
+                {
+                    value = Evaluate(declaration.ExpressionBody.Expression, scope, parameters, depth, activeMethods);
+                    return true;
+                }
+
+                var returns = declaration.AccessorList?.Accessors
+                    .Where(accessor => accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                    .SelectMany(GetAccessorReturnExpressions)
+                    .ToArray() ?? [];
+                if (returns.Length > 0)
+                {
+                    value = CombineAlternatives(returns.Select(expression => Evaluate(expression, scope, parameters, depth, activeMethods)).ToArray(), property.Name);
+                    return true;
+                }
+            }
+
+            value = null!;
+            return false;
+        }
+
+        private static IEnumerable<ExpressionSyntax> GetAccessorReturnExpressions(AccessorDeclarationSyntax accessor)
+        {
+            if (accessor.ExpressionBody?.Expression is not null)
+            {
+                yield return accessor.ExpressionBody.Expression;
+            }
+
+            if (accessor.Body is null)
+            {
+                yield break;
+            }
+
+            foreach (var returnStatement in accessor.Body.DescendantNodes().OfType<ReturnStatementSyntax>())
+            {
+                if (returnStatement.Expression is not null)
+                {
+                    yield return returnStatement.Expression;
+                }
+            }
         }
 
         private SymbolicValue Combine(IReadOnlyList<SymbolicValue> parts, string path)
@@ -936,6 +1176,8 @@ public sealed class SimpleSourceAnalyzer
 
             return next;
         }
+
+        private sealed record TrackedAssignment(ExpressionSyntax Expression, bool IsConditional);
     }
 
     private sealed record SqlObject(string ObjectType, string ObjectName, string FullName, string Operation, string SqlRole);
@@ -944,24 +1186,31 @@ public sealed class SimpleSourceAnalyzer
     {
         public static IReadOnlyList<SqlObject> Extract(string sql)
         {
+            var normalized = PlaceholderSqlNormalizer.Normalize(sql);
             var parser = new TSql160Parser(initialQuotedIdentifiers: true);
-            using var reader = new StringReader(sql);
+            using var reader = new StringReader(normalized.Sql);
             var fragment = parser.Parse(reader, out var errors);
             if (errors.Count > 0)
             {
                 return [];
             }
 
-            var visitor = new TsqlObjectVisitor();
+            var visitor = new TsqlObjectVisitor(normalized.Placeholders);
             fragment.Accept(visitor);
             return visitor.Objects;
         }
 
         private sealed class TsqlObjectVisitor : TSqlFragmentVisitor
         {
+            private readonly IReadOnlyDictionary<string, string> _placeholders;
             private readonly HashSet<string> _cteNames = new(StringComparer.OrdinalIgnoreCase);
             private readonly Stack<SqlObjectContext> _contexts = new();
             private readonly List<SqlObject> _objects = [];
+
+            public TsqlObjectVisitor(IReadOnlyDictionary<string, string> placeholders)
+            {
+                _placeholders = placeholders;
+            }
 
             public IReadOnlyList<SqlObject> Objects => _objects;
 
@@ -1110,6 +1359,7 @@ public sealed class SimpleSourceAnalyzer
 
             private void AddObject(string fullName, string operation, string role, string objectType)
             {
+                fullName = RestorePlaceholders(fullName);
                 if (string.IsNullOrWhiteSpace(fullName) || _cteNames.Contains(fullName))
                 {
                     return;
@@ -1134,7 +1384,22 @@ public sealed class SimpleSourceAnalyzer
                     return "TableVariable";
                 }
 
+                if (fullName.Contains('{', StringComparison.Ordinal))
+                {
+                    return "Unknown";
+                }
+
                 return "TableOrView";
+            }
+
+            private string RestorePlaceholders(string value)
+            {
+                foreach (var placeholder in _placeholders)
+                {
+                    value = value.Replace(placeholder.Key, placeholder.Value, StringComparison.Ordinal);
+                }
+
+                return value;
             }
 
             private static string FormatSchemaObjectName(SchemaObjectName name)
@@ -1144,5 +1409,26 @@ public sealed class SimpleSourceAnalyzer
         }
 
         private sealed record SqlObjectContext(string Operation, string Role);
+
+        private sealed record NormalizedSql(string Sql, IReadOnlyDictionary<string, string> Placeholders);
+
+        private static class PlaceholderSqlNormalizer
+        {
+            private static readonly Regex PlaceholderPattern = new(@"\{[^}]+\}", RegexOptions.Compiled);
+
+            public static NormalizedSql Normalize(string sql)
+            {
+                var replacements = new Dictionary<string, string>(StringComparer.Ordinal);
+                var index = 0;
+                var normalized = PlaceholderPattern.Replace(sql, match =>
+                {
+                    var token = $"__ta_dynamic_{index++}__";
+                    replacements[token] = match.Value;
+                    return token;
+                });
+
+                return new NormalizedSql(normalized, replacements);
+            }
+        }
     }
 }

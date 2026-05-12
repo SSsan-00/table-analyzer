@@ -4,13 +4,21 @@ public sealed record AnalysisRunRequest(
     string ProjectFolder,
     string AnalysisFolder,
     string? AnalysisFile,
-    string OutputRoot);
+    string OutputRoot,
+    ReportOutputFormat OutputFormat = ReportOutputFormat.Csv);
+
+public enum ReportOutputFormat
+{
+    Csv,
+    Xlsx
+}
 
 public sealed record AnalysisRunResult(
     string ReportDirectory,
     IReadOnlyList<SourceFile> AnalysisFiles,
     IReadOnlyList<SourceFile> ContextFiles,
-    AnalysisResult AnalysisResult);
+    AnalysisResult AnalysisResult,
+    ReportOutputFormat OutputFormat);
 
 public sealed class AnalysisRunner
 {
@@ -50,9 +58,16 @@ public sealed class AnalysisRunner
 
         var reportDirectory = new ReportDirectoryFactory().Create(outputRoot, analysisInput, now);
         var result = new SimpleSourceAnalyzer().Analyze(analysisFiles, contextFiles, configuration, progress);
-        new CsvReportWriter().Write(reportDirectory, result);
+        if (request.OutputFormat == ReportOutputFormat.Xlsx)
+        {
+            new XlsxReportWriter().Write(reportDirectory, result);
+        }
+        else
+        {
+            new CsvReportWriter().Write(reportDirectory, result);
+        }
 
-        return new AnalysisRunResult(reportDirectory, analysisFiles, contextFiles, result);
+        return new AnalysisRunResult(reportDirectory, analysisFiles, contextFiles, result, request.OutputFormat);
     }
 
     private static IReadOnlyList<SourceFile> Merge(IReadOnlyList<SourceFile> first, IReadOnlyList<SourceFile> second)

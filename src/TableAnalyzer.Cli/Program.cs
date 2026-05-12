@@ -33,6 +33,7 @@ internal static class CliProgram
             var request = BuildRunRequest(options, outputRoot);
             Console.Error.WriteLine($"Project folder: {Path.GetFullPath(request.ProjectFolder)}");
             Console.Error.WriteLine($"Analysis folder: {Path.GetFullPath(request.AnalysisFolder)}");
+            Console.Error.WriteLine($"Output format: {request.OutputFormat.ToString().ToLowerInvariant()}");
             if (!string.IsNullOrWhiteSpace(request.AnalysisFile))
             {
                 Console.Error.WriteLine($"Analysis file: {Path.GetFullPath(request.AnalysisFile)}");
@@ -54,6 +55,7 @@ internal static class CliProgram
             Console.WriteLine($"Dynamic SQL: {run.AnalysisResult.DynamicSql.Count}");
             Console.WriteLine($"Unresolved SQL: {run.AnalysisResult.UnresolvedSql.Count}");
             Console.WriteLine($"Warnings: {run.AnalysisResult.Warnings.Count}");
+            Console.WriteLine($"Output format: {run.OutputFormat.ToString().ToLowerInvariant()}");
             Console.WriteLine($"Output: {run.ReportDirectory}");
             return 0;
         }
@@ -82,7 +84,7 @@ internal static class CliProgram
             }
 
             options.TryGetValue("analysis-file", out var analysisFile);
-            return new AnalysisRunRequest(projectFolder, analysisFolder, analysisFile, outputRoot);
+            return new AnalysisRunRequest(projectFolder, analysisFolder, analysisFile, outputRoot, ParseOutputFormat(options));
         }
 
         if (!options.TryGetValue("input", out var input) || string.IsNullOrWhiteSpace(input))
@@ -94,10 +96,25 @@ internal static class CliProgram
         if (File.Exists(fullInput))
         {
             var parent = Path.GetDirectoryName(fullInput) ?? Directory.GetCurrentDirectory();
-            return new AnalysisRunRequest(parent, parent, fullInput, outputRoot);
+            return new AnalysisRunRequest(parent, parent, fullInput, outputRoot, ParseOutputFormat(options));
         }
 
-        return new AnalysisRunRequest(fullInput, fullInput, null, outputRoot);
+        return new AnalysisRunRequest(fullInput, fullInput, null, outputRoot, ParseOutputFormat(options));
+    }
+
+    private static ReportOutputFormat ParseOutputFormat(IReadOnlyDictionary<string, string> options)
+    {
+        if (!options.TryGetValue("format", out var value) || string.IsNullOrWhiteSpace(value))
+        {
+            return ReportOutputFormat.Csv;
+        }
+
+        return value.ToLowerInvariant() switch
+        {
+            "csv" => ReportOutputFormat.Csv,
+            "xlsx" => ReportOutputFormat.Xlsx,
+            _ => throw new ArgumentException("Invalid --format. Use csv or xlsx.")
+        };
     }
 
     private static AnalyzerConfiguration BuildConfiguration(IReadOnlyDictionary<string, string> options)
@@ -170,6 +187,7 @@ internal static class CliProgram
         Console.WriteLine("  --extensions .cs,.cshtml.cs");
         Console.WriteLine("  --max-call-depth 8");
         Console.WriteLine("  --max-candidates 50");
+        Console.WriteLine("  --format csv|xlsx");
         Console.WriteLine("  --quiet");
     }
 
