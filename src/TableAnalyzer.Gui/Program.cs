@@ -293,7 +293,7 @@ internal sealed class PathInputRow : UserControl
 {
     private readonly TextBox _textBox = new();
     private readonly Button _browseButton = new();
-    private readonly Button? _clearButton;
+    private readonly Button _clearButton = new();
     private readonly bool _isFolder;
 
     public event Action<string>? PathSelected;
@@ -309,16 +309,13 @@ internal sealed class PathInputRow : UserControl
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            ColumnCount = isFolder ? 3 : 4,
+            ColumnCount = 4,
             RowCount = 1
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-        if (!isFolder)
-        {
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-        }
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
 
         var labelControl = new Label
         {
@@ -338,20 +335,14 @@ internal sealed class PathInputRow : UserControl
         _browseButton.Dock = DockStyle.Fill;
         _browseButton.Click += (_, _) => Browse();
 
+        _clearButton.Text = "クリア";
+        _clearButton.Dock = DockStyle.Fill;
+        _clearButton.Click += (_, _) => PathValue = "";
+
         layout.Controls.Add(labelControl, 0, 0);
         layout.Controls.Add(_textBox, 1, 0);
         layout.Controls.Add(_browseButton, 2, 0);
-
-        if (!isFolder)
-        {
-            _clearButton = new Button
-            {
-                Text = "クリア",
-                Dock = DockStyle.Fill
-            };
-            _clearButton.Click += (_, _) => PathValue = "";
-            layout.Controls.Add(_clearButton, 3, 0);
-        }
+        layout.Controls.Add(_clearButton, 3, 0);
 
         Controls.Add(layout);
     }
