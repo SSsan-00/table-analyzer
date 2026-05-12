@@ -14,24 +14,33 @@ public sealed class SimpleSourceAnalyzer
 
     public AnalysisResult Analyze(IReadOnlyList<SourceFile> files, AnalyzerConfiguration configuration, IProgress<AnalysisProgress>? progress)
     {
+        return Analyze(files, files, configuration, progress);
+    }
+
+    public AnalysisResult Analyze(
+        IReadOnlyList<SourceFile> files,
+        IReadOnlyList<SourceFile> contextFiles,
+        AnalyzerConfiguration configuration,
+        IProgress<AnalysisProgress>? progress = null)
+    {
         var result = new AnalysisResult();
         var reader = new SourceTextReader();
         var ids = new IdSequence();
+        var parsedFiles = ReadAndParseFiles(MergeFiles(files, contextFiles), reader, result, ids, progress);
+        var methods = BuildMethodIndex(parsedFiles.Values);
         var completed = 0;
 
         progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, ""));
         foreach (var file in files)
         {
-            var read = reader.Read(file.FullPath);
-            if (!read.Success)
+            if (!parsedFiles.TryGetValue(Path.GetFullPath(file.FullPath), out var parsed))
             {
-                result.Warnings.Add(new WarningRow(ids.NextWarningId(), "Medium", "FILE_READ_FAILED", file.RelativePath, 0, "", read.ErrorMessage ?? "Failed to read file.", "", ""));
                 completed++;
                 progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
                 continue;
             }
 
-            AnalyzeFile(file, read.Text, configuration, result, ids);
+            AnalyzeFile(file, parsed.Root, methods, configuration, result, ids);
             completed++;
             progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
         }
@@ -39,15 +48,83 @@ public sealed class SimpleSourceAnalyzer
         return result;
     }
 
-    private static void AnalyzeFile(SourceFile file, string source, AnalyzerConfiguration configuration, AnalysisResult result, IdSequence ids)
+    private static Dictionary<string, ParsedSourceFile> ReadAndParseFiles(
+        IReadOnlyList<SourceFile> files,
+        SourceTextReader reader,
+        AnalysisResult result,
+        IdSequence ids,
+        IProgress<AnalysisProgress>? progress)
     {
-        var tree = CSharpSyntaxTree.ParseText(source);
-        var root = tree.GetCompilationUnitRoot();
-        var methods = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
+        var parsedFiles = new Dictionary<string, ParsedSourceFile>(StringComparer.OrdinalIgnoreCase);
+        var completed = 0;
+        progress?.Report(new AnalysisProgress("indexing", completed, files.Count, ""));
+        foreach (var file in files)
+        {
+            var fullPath = Path.GetFullPath(file.FullPath);
+            if (parsedFiles.ContainsKey(fullPath))
+            {
+                completed++;
+                progress?.Report(new AnalysisProgress("indexing", completed, files.Count, file.RelativePath));
+                continue;
+            }
+
+            var read = reader.Read(fullPath);
+            if (!read.Success)
+            {
+                result.Warnings.Add(new WarningRow(ids.NextWarningId(), "Medium", "FILE_READ_FAILED", file.RelativePath, 0, "", read.ErrorMessage ?? "Failed to read file.", "", ""));
+                completed++;
+                progress?.Report(new AnalysisProgress("indexing", completed, files.Count, file.RelativePath));
+                continue;
+            }
+
+            try
+            {
+                var tree = CSharpSyntaxTree.ParseText(read.Text, path: fullPath);
+                parsedFiles[fullPath] = new ParsedSourceFile(tree.GetCompilationUnitRoot());
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            {
+                result.Warnings.Add(new WarningRow(ids.NextWarningId(), "Medium", "FILE_PARSE_FAILED", file.RelativePath, 0, "", ex.Message, "", ""));
+            }
+
+            completed++;
+            progress?.Report(new AnalysisProgress("indexing", completed, files.Count, file.RelativePath));
+        }
+
+        return parsedFiles;
+    }
+
+    private static IReadOnlyList<SourceFile> MergeFiles(IReadOnlyList<SourceFile> first, IReadOnlyList<SourceFile> second)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var merged = new List<SourceFile>();
+        foreach (var file in first.Concat(second))
+        {
+            if (seen.Add(Path.GetFullPath(file.FullPath)))
+            {
+                merged.Add(file);
+            }
+        }
+
+        return merged;
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> BuildMethodIndex(IEnumerable<ParsedSourceFile> parsedFiles)
+    {
+        return parsedFiles
+            .SelectMany(file => file.Root.DescendantNodes().OfType<MethodDeclarationSyntax>())
             .GroupBy(method => method.Identifier.ValueText, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<MethodDeclarationSyntax>)group.ToArray(), StringComparer.Ordinal);
+    }
 
+    private static void AnalyzeFile(
+        SourceFile file,
+        CompilationUnitSyntax root,
+        IReadOnlyDictionary<string, IReadOnlyList<MethodDeclarationSyntax>> methods,
+        AnalyzerConfiguration configuration,
+        AnalysisResult result,
+        IdSequence ids)
+    {
         var evaluator = new ExpressionEvaluator(methods, configuration);
         foreach (var invocation in FindSqlInvocations(root, configuration).OrderBy(invocation => invocation.Syntax.SpanStart))
         {
@@ -208,6 +285,8 @@ public sealed class SimpleSourceAnalyzer
     private sealed record SqlInvocation(string MethodName, ExpressionSyntax SqlExpression, SyntaxNode Syntax);
 
     private sealed record SourceLocation(int Line, int Column);
+
+    private sealed record ParsedSourceFile(CompilationUnitSyntax Root);
 
     private sealed class IdSequence
     {

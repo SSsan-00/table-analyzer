@@ -12,12 +12,14 @@ var tests = new (string Name, Action Body)[]
     ("analyzer extracts direct sql usage and duplicate appearances", Tests.AnalyzerExtractsDirectSqlUsageAndDuplicateAppearances),
     ("analyzer resolves string format sql", Tests.AnalyzerResolvesStringFormatSql),
     ("analyzer follows helper method return values recursively", Tests.AnalyzerFollowsHelperMethodReturnValuesRecursively),
+    ("analyzer follows helper method from context files", Tests.AnalyzerFollowsHelperMethodFromContextFiles),
     ("analyzer emits candidates from conditional helper method", Tests.AnalyzerEmitsCandidatesFromConditionalHelperMethod),
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
+    ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -191,6 +193,42 @@ internal static class Tests
         Assert.Equal("certain", result.TableUsages[0].Confidence);
     }
 
+    public static void AnalyzerFollowsHelperMethodFromContextFiles()
+    {
+        using var temp = TempWorkspace.Create();
+        var page = temp.Write("Pages/Index.cshtml.cs", """
+            class IndexModel
+            {
+                void OnGet()
+                {
+                    var sql = SqlFactory.BuildSelect("Users");
+                    db.Query(sql);
+                }
+            }
+            """);
+        var helper = temp.Write("Infrastructure/SqlFactory.cs", """
+            static class SqlFactory
+            {
+                public static string BuildSelect(string table)
+                {
+                    return "SELECT * FROM dbo." + table;
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze(
+            [new SourceFile(page, "Index.cshtml.cs")],
+            [
+                new SourceFile(page, "Pages/Index.cshtml.cs"),
+                new SourceFile(helper, "Infrastructure/SqlFactory.cs")
+            ],
+            new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("Index.cshtml.cs", result.TableUsages[0].SourceFile);
+    }
+
     public static void AnalyzerEmitsCandidatesFromConditionalHelperMethod()
     {
         using var temp = TempWorkspace.Create();
@@ -346,13 +384,73 @@ internal static class Tests
             new AnalyzerConfiguration(),
             progress);
 
-        Assert.Equal(3, progress.Items.Count);
-        Assert.Equal(0, progress.Items[0].Completed);
-        Assert.Equal(2, progress.Items[0].Total);
-        Assert.Equal(1, progress.Items[1].Completed);
-        Assert.Equal("Services/One.cs", progress.Items[1].CurrentFile);
-        Assert.Equal(2, progress.Items[2].Completed);
-        Assert.Equal("Services/Two.cs", progress.Items[2].CurrentFile);
+        var indexing = progress.Items.Where(item => item.Stage == "indexing").ToArray();
+        var analyzing = progress.Items.Where(item => item.Stage == "analyzing").ToArray();
+
+        Assert.Equal(3, indexing.Length);
+        Assert.Equal(0, indexing[0].Completed);
+        Assert.Equal(2, indexing[0].Total);
+        Assert.Equal(2, indexing[2].Completed);
+
+        Assert.Equal(3, analyzing.Length);
+        Assert.Equal(0, analyzing[0].Completed);
+        Assert.Equal(2, analyzing[0].Total);
+        Assert.Equal(1, analyzing[1].Completed);
+        Assert.Equal("Services/One.cs", analyzing[1].CurrentFile);
+        Assert.Equal(2, analyzing[2].Completed);
+        Assert.Equal("Services/Two.cs", analyzing[2].CurrentFile);
+    }
+
+    public static void RunnerAnalyzesSingleTargetFileWithProjectContext()
+    {
+        using var temp = TempWorkspace.Create();
+        var target = temp.Write("Pages/Target.cshtml.cs", """
+            class TargetModel
+            {
+                void OnGet()
+                {
+                    db.Query(SqlFactory.BuildSelect("TargetUsers"));
+                }
+            }
+            """);
+        temp.Write("Pages/Other.cshtml.cs", """
+            class OtherModel
+            {
+                void OnGet()
+                {
+                    db.Query("SELECT * FROM dbo.OtherUsers");
+                }
+            }
+            """);
+        temp.Write("Shared/SqlFactory.cs", """
+            static class SqlFactory
+            {
+                public static string BuildSelect(string table) => "SELECT * FROM dbo." + table;
+            }
+            """);
+        var output = Path.Combine(Path.GetTempPath(), "table-analyzer-output-tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var run = new AnalysisRunner().Run(
+                new AnalysisRunRequest(temp.Root, Path.Combine(temp.Root, "Pages"), target, output),
+                new AnalyzerConfiguration(),
+                new DateTime(2026, 5, 12, 9, 0, 0));
+
+            Assert.Equal(1, run.AnalysisFiles.Count);
+            Assert.True(run.ContextFiles.Count >= 3);
+            Assert.Single(run.AnalysisResult.TableUsages);
+            Assert.Equal("dbo.TargetUsers", run.AnalysisResult.TableUsages[0].FullName);
+            Assert.True(!run.AnalysisResult.TableUsages.Any(row => row.FullName == "dbo.OtherUsers"));
+            Assert.True(File.Exists(Path.Combine(run.ReportDirectory, "table-usages.csv")));
+        }
+        finally
+        {
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+        }
     }
 
     public static void CsvWriterWritesAllExpectedFilesWithBom()

@@ -1,16 +1,22 @@
 # Table Analyzer
 
-Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVに出力するCLIツールです。
+Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVに出力するツールです。CLI とローカルGUIを用意しています。
 
 C#ソースは Roslyn の構文木で解析します。コメント内の `db.Query(...)` のような文字列は実行コードとして扱いません。
 
+## 対象環境
+
+- .NET SDK 9.0
+- SQL Server 向けSQL文字列
+- C# / Razor Pages の `.cs` / `.cshtml.cs`
+
 ## できること
 
-- フォルダ配下の `.cs` / `.cshtml.cs` を再帰的に解析
+- 解析対象フォルダ配下の `.cs` / `.cshtml.cs` を再帰的に解析
 - 単一ファイルだけを指定して解析
+- 解析対象外のプロジェクト内ファイルにある helper メソッドの戻り値をリンクして解析
 - SQL実行メソッドの引数からSQL文字列を追跡
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
-- helperメソッドの戻り値を再帰的に追跡
 - `if` / 三項演算子 / switch式などから候補を複数出力
 - UTF-8 / Shift-JIS(CP932) のソースを読み取り
 - CSVは UTF-8 BOM付きで出力
@@ -19,20 +25,93 @@ C#ソースは Roslyn の構文木で解析します。コメント内の `db.Qu
 
 解析対象プロジェクトには一切書き込みません。
 
-`--out` は必ず `--input` の外側を指定してください。入力フォルダ配下を出力先にするとエラーになります。
+出力先フォルダは、解析対象プロジェクトフォルダや解析対象フォルダの外側を指定してください。入力配下を出力先にするとエラーになります。
+
+## GUIの使い方
 
 ```bash
-# OK
-TableAnalyzer analyze --input C:\src\MyApp --out C:\work\table-analysis
-
-# NG: input配下に出力しようとしている
-TableAnalyzer analyze --input C:\src\MyApp --out C:\src\MyApp\table-analysis
+dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 ```
+
+起動後、ブラウザで次を開きます。
+
+```text
+http://localhost:5123
+```
+
+GUIでは次を入力します。
+
+- 解析対象プロジェクトフォルダ: メソッド解決用に索引化するプロジェクトルート
+- 解析対象フォルダ: 実際にCSV出力対象として解析するフォルダ
+- 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
+- 出力先フォルダ: CSVレポートの出力先
+
+入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
+
+## CLIの使い方
+
+解析対象フォルダを再帰的に解析する場合:
+
+```bash
+dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
+  analyze \
+  --project-folder /path/to/MyApp \
+  --analysis-folder /path/to/MyApp/Pages \
+  --out /path/to/table-analysis
+```
+
+単一ファイルだけ解析しつつ、プロジェクト内の別ファイルにある helper メソッドもリンクする場合:
+
+```bash
+dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
+  analyze \
+  --project-folder /path/to/MyApp \
+  --analysis-folder /path/to/MyApp/Pages \
+  --analysis-file /path/to/MyApp/Pages/Users/Index.cshtml.cs \
+  --out /path/to/table-analysis
+```
+
+ビルド済みDLLを実行する場合:
+
+```bash
+dotnet src/TableAnalyzer.Cli/bin/Release/net9.0/TableAnalyzer.Cli.dll \
+  analyze \
+  --project-folder /path/to/MyApp \
+  --analysis-folder /path/to/MyApp/Pages \
+  --out /path/to/table-analysis
+```
+
+従来互換の短縮指定も使えます。この場合、`--input` がプロジェクトフォルダ兼解析対象になります。
+
+```bash
+dotnet src/TableAnalyzer.Cli/bin/Release/net9.0/TableAnalyzer.Cli.dll \
+  analyze \
+  --input /path/to/project-or-file \
+  --out /path/to/table-analysis
+```
+
+解析中は標準エラーに進捗が表示されます。
+
+```text
+Project folder: C:\src\MyApp
+Analysis folder: C:\src\MyApp\Pages
+Scanning project context and analysis targets...
+Indexing: 0/1840 (0%)
+Indexing: 25/1840 (1%) Services\UserService.cs
+...
+Analyzing: 0/320 (0%)
+Analyzing: 25/320 (7%) Users\Index.cshtml.cs
+...
+Analyzing: 320/320 (100%) Users\Details.cshtml.cs
+```
+
+進捗表示を抑止する場合は `--quiet` を指定します。
 
 ## ビルド
 
 ```bash
 dotnet build src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -c Release
+dotnet build src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj -c Release
 ```
 
 ## テスト
@@ -41,70 +120,9 @@ dotnet build src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -c Release
 dotnet run --project tests/TableAnalyzer.Tests/TableAnalyzer.Tests.csproj
 ```
 
-## 基本的な使い方
-
-開発中に直接実行する場合:
-
-```bash
-dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
-  analyze \
-  --input /path/to/project-or-file \
-  --out /path/to/report-root
-```
-
-ビルド済みDLLを実行する場合:
-
-```bash
-dotnet src/TableAnalyzer.Cli/bin/Release/net10.0/TableAnalyzer.Cli.dll \
-  analyze \
-  --input /path/to/project-or-file \
-  --out /path/to/report-root
-```
-
-Windows例:
-
-```powershell
-dotnet .\src\TableAnalyzer.Cli\bin\Release\net10.0\TableAnalyzer.Cli.dll `
-  analyze `
-  --input "C:\src\MyApp" `
-  --out "C:\work\table-analysis"
-```
-
-解析中は標準エラーに進捗が表示されます。
-
-```text
-Scanning input: C:\src\MyApp
-Files queued: 1840
-Analyzing: 0/1840 (0%)
-Analyzing: 25/1840 (1%) Services\UserService.cs
-Analyzing: 50/1840 (2%) Pages\Users\Index.cshtml.cs
-...
-Analyzing: 1840/1840 (100%) Services\LastFile.cs
-Writing reports...
-```
-
-進捗表示を抑止したい場合は `--quiet` を指定します。
-
-```powershell
-dotnet .\src\TableAnalyzer.Cli\bin\Release\net10.0\TableAnalyzer.Cli.dll `
-  analyze `
-  --input "C:\src\MyApp" `
-  --out "C:\work\table-analysis" `
-  --quiet
-```
-
-単一ファイルだけ解析する場合:
-
-```powershell
-dotnet .\src\TableAnalyzer.Cli\bin\Release\net10.0\TableAnalyzer.Cli.dll `
-  analyze `
-  --input "C:\src\MyApp\Pages\Users\Index.cshtml.cs" `
-  --out "C:\work\table-analysis"
-```
-
 ## 出力先
 
-`--out` で指定したフォルダの下に、実行ごとのレポートフォルダを作ります。
+`--out` またはGUIの出力先フォルダの下に、実行ごとのレポートフォルダを作ります。
 
 ```text
 {out}/yyyyMMdd-HHmmss_{inputName}/
@@ -113,7 +131,7 @@ dotnet .\src\TableAnalyzer.Cli\bin\Release\net10.0\TableAnalyzer.Cli.dll `
 例:
 
 ```text
-C:\work\table-analysis\20260510-143012_MyApp\
+C:\work\table-analysis\20260512-143012_Pages\
 ```
 
 同じ名前のレポートフォルダが既にある場合はエラーになります。
@@ -147,7 +165,7 @@ UserArchive,dbo.UserArchive,INSERT,Target
 Users,dbo.Users,SELECT,Source
 ```
 
-つまり、INSERT先は `Operation=INSERT`, `SqlRole=Target`、SELECT元は `Operation=SELECT`, `SqlRole=Source` として扱います。
+INSERT先は `Operation=INSERT`, `SqlRole=Target`、SELECT元は `Operation=SELECT`, `SqlRole=Source` として扱います。
 
 ## Bootstrap
 
@@ -160,11 +178,28 @@ Users,dbo.Users,SELECT,Source
 .\bootstrap.ps1 build
 ```
 
-解析まで一括で行う場合:
+GUIを起動する場合:
 
 ```powershell
-.\bootstrap.ps1 all `
-  -Input "C:\src\MyApp" `
+.\bootstrap.ps1 gui
+```
+
+解析する場合:
+
+```powershell
+.\bootstrap.ps1 analyze `
+  -ProjectFolder "C:\src\MyApp" `
+  -AnalysisFolder "C:\src\MyApp\Pages" `
+  -Out "C:\work\table-analysis"
+```
+
+単一ファイルだけ解析する場合:
+
+```powershell
+.\bootstrap.ps1 analyze `
+  -ProjectFolder "C:\src\MyApp" `
+  -AnalysisFolder "C:\src\MyApp\Pages" `
+  -AnalysisFile "C:\src\MyApp\Pages\Users\Index.cshtml.cs" `
   -Out "C:\work\table-analysis"
 ```
 

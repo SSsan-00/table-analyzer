@@ -23,12 +23,6 @@ internal static class CliProgram
             }
 
             var options = ParseOptions(args.Skip(1).ToArray());
-            if (!options.TryGetValue("input", out var input) || string.IsNullOrWhiteSpace(input))
-            {
-                Console.Error.WriteLine("Missing required option: --input");
-                return 1;
-            }
-
             if (!options.TryGetValue("out", out var outputRoot) || string.IsNullOrWhiteSpace(outputRoot))
             {
                 Console.Error.WriteLine("Missing required option: --out");
@@ -36,29 +30,31 @@ internal static class CliProgram
             }
 
             var configuration = BuildConfiguration(options);
-            new RunOptionsValidator().Validate(input, outputRoot);
+            var request = BuildRunRequest(options, outputRoot);
+            Console.Error.WriteLine($"Project folder: {Path.GetFullPath(request.ProjectFolder)}");
+            Console.Error.WriteLine($"Analysis folder: {Path.GetFullPath(request.AnalysisFolder)}");
+            if (!string.IsNullOrWhiteSpace(request.AnalysisFile))
+            {
+                Console.Error.WriteLine($"Analysis file: {Path.GetFullPath(request.AnalysisFile)}");
+            }
 
-            var reportDirectory = new ReportDirectoryFactory().Create(outputRoot, input, DateTime.Now);
-            var scanner = new FileSystemScanner();
-            Console.Error.WriteLine($"Scanning input: {Path.GetFullPath(input)}");
-            var files = scanner.GetSourceFiles(input, configuration);
-            Console.Error.WriteLine($"Files queued: {files.Count}");
             var progress = options.ContainsKey("quiet")
                 ? null
                 : new ConsoleAnalysisProgressReporter();
-            var result = new SimpleSourceAnalyzer().Analyze(files, configuration, progress);
-            Console.Error.WriteLine("Writing reports...");
-            new CsvReportWriter().Write(reportDirectory, result);
-
-            Console.WriteLine($"Input: {Path.GetFullPath(input)}");
-            Console.WriteLine($"Mode: {(File.Exists(input) ? "Single file" : "Directory recursive")}");
-            Console.WriteLine($"Files analyzed: {files.Count}");
-            Console.WriteLine($"SQL snippets: {result.SqlSnippets.Count}");
-            Console.WriteLine($"Table usages: {result.TableUsages.Count}");
-            Console.WriteLine($"Dynamic SQL: {result.DynamicSql.Count}");
-            Console.WriteLine($"Unresolved SQL: {result.UnresolvedSql.Count}");
-            Console.WriteLine($"Warnings: {result.Warnings.Count}");
-            Console.WriteLine($"Output: {reportDirectory}");
+            Console.Error.WriteLine("Scanning project context and analysis targets...");
+            var run = new AnalysisRunner().Run(request, configuration, progress);
+            Console.WriteLine($"Project folder: {Path.GetFullPath(request.ProjectFolder)}");
+            Console.WriteLine($"Analysis folder: {Path.GetFullPath(request.AnalysisFolder)}");
+            Console.WriteLine($"Analysis file: {(string.IsNullOrWhiteSpace(request.AnalysisFile) ? "(none)" : Path.GetFullPath(request.AnalysisFile))}");
+            Console.WriteLine($"Mode: {(string.IsNullOrWhiteSpace(request.AnalysisFile) ? "Directory recursive" : "Single file")}");
+            Console.WriteLine($"Context files indexed: {run.ContextFiles.Count}");
+            Console.WriteLine($"Files analyzed: {run.AnalysisFiles.Count}");
+            Console.WriteLine($"SQL snippets: {run.AnalysisResult.SqlSnippets.Count}");
+            Console.WriteLine($"Table usages: {run.AnalysisResult.TableUsages.Count}");
+            Console.WriteLine($"Dynamic SQL: {run.AnalysisResult.DynamicSql.Count}");
+            Console.WriteLine($"Unresolved SQL: {run.AnalysisResult.UnresolvedSql.Count}");
+            Console.WriteLine($"Warnings: {run.AnalysisResult.Warnings.Count}");
+            Console.WriteLine($"Output: {run.ReportDirectory}");
             return 0;
         }
         catch (Exception ex)
@@ -66,6 +62,42 @@ internal static class CliProgram
             Console.Error.WriteLine($"Error: {ex.Message}");
             return 1;
         }
+    }
+
+    private static AnalysisRunRequest BuildRunRequest(IReadOnlyDictionary<string, string> options, string outputRoot)
+    {
+        var hasProjectModeOptions = options.ContainsKey("project-folder") ||
+                                    options.ContainsKey("analysis-folder") ||
+                                    options.ContainsKey("analysis-file");
+        if (hasProjectModeOptions)
+        {
+            if (!options.TryGetValue("project-folder", out var projectFolder) || string.IsNullOrWhiteSpace(projectFolder))
+            {
+                throw new ArgumentException("Missing required option: --project-folder");
+            }
+
+            if (!options.TryGetValue("analysis-folder", out var analysisFolder) || string.IsNullOrWhiteSpace(analysisFolder))
+            {
+                throw new ArgumentException("Missing required option: --analysis-folder");
+            }
+
+            options.TryGetValue("analysis-file", out var analysisFile);
+            return new AnalysisRunRequest(projectFolder, analysisFolder, analysisFile, outputRoot);
+        }
+
+        if (!options.TryGetValue("input", out var input) || string.IsNullOrWhiteSpace(input))
+        {
+            throw new ArgumentException("Missing required option: --input");
+        }
+
+        var fullInput = Path.GetFullPath(input);
+        if (File.Exists(fullInput))
+        {
+            var parent = Path.GetDirectoryName(fullInput) ?? Directory.GetCurrentDirectory();
+            return new AnalysisRunRequest(parent, parent, fullInput, outputRoot);
+        }
+
+        return new AnalysisRunRequest(fullInput, fullInput, null, outputRoot);
     }
 
     private static AnalyzerConfiguration BuildConfiguration(IReadOnlyDictionary<string, string> options)
@@ -127,9 +159,14 @@ internal static class CliProgram
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
+        Console.WriteLine("  TableAnalyzer analyze --project-folder <folder> --analysis-folder <folder> [--analysis-file <file>] --out <output-root>");
         Console.WriteLine("  TableAnalyzer analyze --input <file-or-folder> --out <output-root>");
         Console.WriteLine();
         Console.WriteLine("Options:");
+        Console.WriteLine("  --project-folder <folder>   Cross-file method resolution context.");
+        Console.WriteLine("  --analysis-folder <folder>  Required analysis root. Used recursively when --analysis-file is omitted.");
+        Console.WriteLine("  --analysis-file <file>      Optional single file to analyze.");
+        Console.WriteLine("  --input <file-or-folder>    Compatibility shortcut. Uses input as both project and analysis root.");
         Console.WriteLine("  --extensions .cs,.cshtml.cs");
         Console.WriteLine("  --max-call-depth 8");
         Console.WriteLine("  --max-candidates 50");
@@ -141,11 +178,19 @@ internal static class CliProgram
         private readonly object _gate = new();
         private DateTime _lastPrintedAt = DateTime.MinValue;
         private int _lastPrintedCompleted = -1;
+        private string _lastStage = "";
 
         public void Report(AnalysisProgress value)
         {
             lock (_gate)
             {
+                if (!string.Equals(_lastStage, value.Stage, StringComparison.Ordinal))
+                {
+                    _lastStage = value.Stage;
+                    _lastPrintedAt = DateTime.MinValue;
+                    _lastPrintedCompleted = -1;
+                }
+
                 if (!ShouldPrint(value))
                 {
                     return;
@@ -156,7 +201,7 @@ internal static class CliProgram
 
                 if (value.Total == 0)
                 {
-                    Console.Error.WriteLine("Analyzing: no source files found");
+                    Console.Error.WriteLine($"{GetStageLabel(value.Stage)}: no source files found");
                     return;
                 }
 
@@ -164,7 +209,7 @@ internal static class CliProgram
                 var current = string.IsNullOrWhiteSpace(value.CurrentFile)
                     ? ""
                     : $" {value.CurrentFile}";
-                Console.Error.WriteLine($"Analyzing: {value.Completed}/{value.Total} ({percent}%){current}");
+                Console.Error.WriteLine($"{GetStageLabel(value.Stage)}: {value.Completed}/{value.Total} ({percent}%){current}");
             }
         }
 
@@ -181,6 +226,16 @@ internal static class CliProgram
             }
 
             return DateTime.UtcNow - _lastPrintedAt >= TimeSpan.FromSeconds(2);
+        }
+
+        private static string GetStageLabel(string stage)
+        {
+            return stage switch
+            {
+                "indexing" => "Indexing",
+                "analyzing" => "Analyzing",
+                _ => stage.Length == 0 ? "Progress" : stage
+            };
         }
     }
 }
