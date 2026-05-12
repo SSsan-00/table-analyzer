@@ -4,7 +4,7 @@ using TableAnalyzer.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
-if (string.IsNullOrWhiteSpace(builder.Configuration["urls"]))
+if (!HasExplicitUrls(args))
 {
     app.Urls.Add("http://localhost:5123");
 }
@@ -59,6 +59,14 @@ static IResult Html(string html)
 static string GetFormValue(IFormCollection form, string key)
 {
     return form.TryGetValue(key, out var value) ? value.ToString().Trim() : "";
+}
+
+static bool HasExplicitUrls(string[] args)
+{
+    return args.Any(arg => string.Equals(arg, "--urls", StringComparison.OrdinalIgnoreCase) ||
+                           arg.StartsWith("--urls=", StringComparison.OrdinalIgnoreCase)) ||
+           !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")) ||
+           !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DOTNET_URLS"));
 }
 
 static string RenderPage(GuiSettings settings, AnalysisRunResult? result, string? error)
