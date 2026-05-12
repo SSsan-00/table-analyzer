@@ -720,6 +720,11 @@ public sealed class SimpleSourceAnalyzer
                 return Unknown(invocation);
             }
 
+            if (TryEvaluateStringBuilderToString(invocation, scope, parameters, depth, activeMethods, out var stringBuilderValue))
+            {
+                return stringBuilderValue;
+            }
+
             if (string.Equals(methodName, "Format", StringComparison.Ordinal) ||
                 invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
                 string.Equals(memberAccess.Name.Identifier.ValueText, "Format", StringComparison.Ordinal) &&
@@ -771,6 +776,82 @@ public sealed class SimpleSourceAnalyzer
             return CombineAlternatives(evaluatedReturns, methodName);
         }
 
+        private bool TryEvaluateStringBuilderToString(
+            InvocationExpressionSyntax invocation,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods,
+            out SymbolicValue value)
+        {
+            value = null!;
+            if (invocation.ArgumentList.Arguments.Count != 0 ||
+                invocation.Expression is not MemberAccessExpressionSyntax memberAccess ||
+                !string.Equals(memberAccess.Name.Identifier.ValueText, "ToString", StringComparison.Ordinal) ||
+                memberAccess.Expression is not IdentifierNameSyntax receiver)
+            {
+                return false;
+            }
+
+            var stringBuilderValue = EvaluateStringBuilderValue(receiver.Identifier.ValueText, scope, invocation.SpanStart, parameters, depth, activeMethods);
+            if (stringBuilderValue is null)
+            {
+                return false;
+            }
+
+            value = stringBuilderValue with
+            {
+                ResolutionPath = string.IsNullOrEmpty(stringBuilderValue.ResolutionPath)
+                    ? "StringBuilder.ToString"
+                    : $"StringBuilder.ToString -> {stringBuilderValue.ResolutionPath}"
+            };
+            return true;
+        }
+
+        private SymbolicValue? EvaluateStringBuilderValue(
+            string builderName,
+            MethodDeclarationSyntax? scope,
+            int beforePosition,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            if (scope?.Body is null)
+            {
+                return null;
+            }
+
+            var creation = FindStringBuilderCreation(scope, builderName, beforePosition);
+            if (creation is null)
+            {
+                return null;
+            }
+
+            var current = EvaluateStringBuilderInitialValue(creation, scope, parameters, depth, activeMethods);
+            var mutations = FindStringBuilderMutations(scope.Body, builderName, creation.Position, beforePosition);
+            for (var index = 0; index < mutations.Count;)
+            {
+                var controlNode = mutations[index].ControlNode;
+                if (controlNode is null)
+                {
+                    current = ApplyStringBuilderMutation(current, mutations[index], scope, parameters, depth, activeMethods);
+                    index++;
+                    continue;
+                }
+
+                var group = new List<StringBuilderMutation>();
+                while (index < mutations.Count && ReferenceEquals(mutations[index].ControlNode, controlNode))
+                {
+                    group.Add(mutations[index]);
+                    index++;
+                }
+
+                current = ApplyControlledStringBuilderMutations(current, controlNode, group, scope, parameters, depth, activeMethods);
+            }
+
+            return current;
+        }
+
         private SymbolicValue EvaluateStringFormat(
             InvocationExpressionSyntax invocation,
             MethodDeclarationSyntax? scope,
@@ -778,13 +859,24 @@ public sealed class SimpleSourceAnalyzer
             int depth,
             HashSet<string> activeMethods)
         {
-            if (invocation.ArgumentList.Arguments.Count == 0)
+            return EvaluateFormatArguments(invocation.ArgumentList.Arguments.ToArray(), scope, parameters, depth, activeMethods, "string.Format");
+        }
+
+        private SymbolicValue EvaluateFormatArguments(
+            IReadOnlyList<ArgumentSyntax> arguments,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods,
+            string path)
+        {
+            if (arguments.Count == 0)
             {
-                return Unknown(invocation);
+                return new SymbolicValue([], "", "unknown", path, "format string is missing");
             }
 
-            var format = Evaluate(invocation.ArgumentList.Arguments[0].Expression, scope, parameters, depth, activeMethods);
-            var values = invocation.ArgumentList.Arguments.Skip(1)
+            var format = Evaluate(arguments[0].Expression, scope, parameters, depth, activeMethods);
+            var values = arguments.Skip(1)
                 .Select(argument => Evaluate(argument.Expression, scope, parameters, depth, activeMethods))
                 .ToArray();
             var current = format.Candidates.Count > 0 ? format.Candidates.ToList() : [format.Pattern];
@@ -793,7 +885,7 @@ public sealed class SimpleSourceAnalyzer
                 current = ReplacePlaceholder(current, "{" + index + "}", values[index].Candidates.Count > 0 ? values[index].Candidates : [values[index].Pattern]);
             }
 
-            return FromCandidates(current, format.Pattern, "string.Format");
+            return FromCandidates(current, format.Pattern, path);
         }
 
         private SymbolicValue EvaluateInterpolatedString(
@@ -875,6 +967,254 @@ public sealed class SimpleSourceAnalyzer
             return values
                 .Distinct()
                 .ToArray();
+        }
+
+        private StringBuilderCreation? FindStringBuilderCreation(MethodDeclarationSyntax scope, string name, int beforePosition)
+        {
+            var creations = new List<StringBuilderCreation>();
+            foreach (var declarator in scope.Body?.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == name && item.Initializer?.Value is not null) ?? [])
+            {
+                var declaredType = declarator.Parent is VariableDeclarationSyntax declaration
+                    ? declaration.Type
+                    : null;
+                if (TryGetStringBuilderCreation(declarator.Initializer!.Value, declaredType, out var arguments))
+                {
+                    creations.Add(new StringBuilderCreation(declarator.Initializer.Value, declarator.SpanStart, arguments));
+                }
+            }
+
+            foreach (var assignment in scope.Body?.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.IsKind(SyntaxKind.SimpleAssignmentExpression)) ?? [])
+            {
+                if (assignment.Left is IdentifierNameSyntax identifier &&
+                    string.Equals(identifier.Identifier.ValueText, name, StringComparison.Ordinal) &&
+                    TryGetStringBuilderCreation(assignment.Right, null, out var arguments))
+                {
+                    creations.Add(new StringBuilderCreation(assignment.Right, assignment.SpanStart, arguments));
+                }
+            }
+
+            return creations
+                .OrderBy(creation => creation.Position)
+                .LastOrDefault();
+        }
+
+        private bool TryGetStringBuilderCreation(ExpressionSyntax expression, TypeSyntax? declaredType, out IReadOnlyList<ArgumentSyntax> arguments)
+        {
+            expression = Unwrap(expression);
+            if (expression is ObjectCreationExpressionSyntax objectCreation)
+            {
+                arguments = objectCreation.ArgumentList?.Arguments.ToArray() ?? [];
+                var type = semanticContext.GetModel(expression.SyntaxTree).GetTypeInfo(expression).Type;
+                return IsStringBuilderType(type) ||
+                       IsUnresolvedType(type) && IsStringBuilderTypeName(GetTypeName(objectCreation.Type));
+            }
+
+            if (expression is ImplicitObjectCreationExpressionSyntax implicitCreation)
+            {
+                arguments = implicitCreation.ArgumentList.Arguments.ToArray();
+                var type = semanticContext.GetModel(expression.SyntaxTree).GetTypeInfo(expression).Type;
+                return IsStringBuilderType(type) ||
+                       IsUnresolvedType(type) && declaredType is not null && IsStringBuilderTypeName(GetTypeName(declaredType));
+            }
+
+            arguments = [];
+            return false;
+        }
+
+        private SymbolicValue EvaluateStringBuilderInitialValue(
+            StringBuilderCreation creation,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            if (creation.Arguments.Count == 0 || !IsStringLikeExpression(creation.Arguments[0].Expression))
+            {
+                return Literal("");
+            }
+
+            return Evaluate(creation.Arguments[0].Expression, scope, parameters, depth, activeMethods);
+        }
+
+        private IReadOnlyList<StringBuilderMutation> FindStringBuilderMutations(BlockSyntax body, string builderName, int afterPosition, int beforePosition)
+        {
+            return body.DescendantNodes().OfType<InvocationExpressionSyntax>()
+                .Where(invocation => invocation.SpanStart > afterPosition && invocation.SpanStart < beforePosition)
+                .Select(invocation => TryCreateStringBuilderMutation(body, builderName, invocation, out var mutation) ? mutation : null)
+                .Where(mutation => mutation is not null)
+                .Select(mutation => mutation!)
+                .OrderBy(mutation => mutation.Invocation.SpanStart)
+                .ToArray();
+        }
+
+        private static bool TryCreateStringBuilderMutation(
+            BlockSyntax body,
+            string builderName,
+            InvocationExpressionSyntax invocation,
+            out StringBuilderMutation mutation)
+        {
+            mutation = null!;
+            if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess ||
+                memberAccess.Expression is not IdentifierNameSyntax receiver ||
+                !string.Equals(receiver.Identifier.ValueText, builderName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var methodName = memberAccess.Name.Identifier.ValueText;
+            if (methodName is not ("Append" or "AppendLine" or "AppendFormat" or "Clear"))
+            {
+                return false;
+            }
+
+            mutation = new StringBuilderMutation(invocation, methodName, invocation.ArgumentList.Arguments.ToArray(), GetStringBuilderControlNode(body, invocation));
+            return true;
+        }
+
+        private SymbolicValue ApplyControlledStringBuilderMutations(
+            SymbolicValue current,
+            SyntaxNode controlNode,
+            IReadOnlyList<StringBuilderMutation> mutations,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            if (controlNode is IfStatementSyntax ifStatement)
+            {
+                var branchValues = new List<SymbolicValue>();
+                var thenMutations = mutations.Where(mutation => IsWithin(mutation.Invocation, ifStatement.Statement)).ToArray();
+                if (thenMutations.Length > 0)
+                {
+                    branchValues.Add(ApplyStringBuilderMutationSequence(current, thenMutations, scope, parameters, depth, activeMethods));
+                }
+                else
+                {
+                    branchValues.Add(current);
+                }
+
+                if (ifStatement.Else?.Statement is { } elseStatement)
+                {
+                    var elseMutations = mutations.Where(mutation => IsWithin(mutation.Invocation, elseStatement)).ToArray();
+                    branchValues.Add(elseMutations.Length > 0
+                        ? ApplyStringBuilderMutationSequence(current, elseMutations, scope, parameters, depth, activeMethods)
+                        : current);
+                }
+                else
+                {
+                    branchValues.Add(current);
+                }
+
+                return CombineAlternatives(branchValues, "StringBuilder.if");
+            }
+
+            if (controlNode is SwitchStatementSyntax switchStatement)
+            {
+                var branchValues = switchStatement.Sections
+                    .Select(section =>
+                    {
+                        var sectionMutations = mutations.Where(mutation => IsWithin(mutation.Invocation, section)).ToArray();
+                        return sectionMutations.Length > 0
+                            ? ApplyStringBuilderMutationSequence(current, sectionMutations, scope, parameters, depth, activeMethods)
+                            : current;
+                    })
+                    .ToArray();
+                return branchValues.Length > 0
+                    ? CombineAlternatives(branchValues, "StringBuilder.switch")
+                    : current;
+            }
+
+            var once = ApplyStringBuilderMutationSequence(current, mutations, scope, parameters, depth, activeMethods);
+            return CombineAlternatives([current, once], "StringBuilder.loop");
+        }
+
+        private SymbolicValue ApplyStringBuilderMutationSequence(
+            SymbolicValue current,
+            IReadOnlyList<StringBuilderMutation> mutations,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            foreach (var mutation in mutations)
+            {
+                current = ApplyStringBuilderMutation(current, mutation, scope, parameters, depth, activeMethods);
+            }
+
+            return current;
+        }
+
+        private SymbolicValue ApplyStringBuilderMutation(
+            SymbolicValue current,
+            StringBuilderMutation mutation,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            return mutation.MethodName switch
+            {
+                "Append" => mutation.Arguments.Count == 0
+                    ? current
+                    : Combine([current, Evaluate(mutation.Arguments[0].Expression, scope, parameters, depth, activeMethods)], "StringBuilder.Append"),
+                "AppendLine" => Combine(
+                [
+                    current,
+                    mutation.Arguments.Count == 0 ? Literal("") : Evaluate(mutation.Arguments[0].Expression, scope, parameters, depth, activeMethods),
+                    Literal("\n")
+                ], "StringBuilder.AppendLine"),
+                "AppendFormat" => mutation.Arguments.Count == 0
+                    ? current
+                    : Combine([current, EvaluateFormatArguments(mutation.Arguments, scope, parameters, depth, activeMethods, "StringBuilder.AppendFormat")], "StringBuilder.AppendFormat"),
+                "Clear" => Literal(""),
+                _ => current
+            };
+        }
+
+        private static SyntaxNode? GetStringBuilderControlNode(BlockSyntax body, SyntaxNode node)
+        {
+            foreach (var ancestor in node.Ancestors().TakeWhile(ancestor => ancestor != body))
+            {
+                if (ancestor is IfStatementSyntax or SwitchStatementSyntax or ForStatementSyntax or ForEachStatementSyntax
+                    or WhileStatementSyntax or DoStatementSyntax)
+                {
+                    return ancestor;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsWithin(SyntaxNode node, SyntaxNode ancestor)
+        {
+            return node == ancestor || node.Ancestors().Any(item => item == ancestor);
+        }
+
+        private bool IsStringLikeExpression(ExpressionSyntax expression)
+        {
+            var typeInfo = semanticContext.GetModel(expression.SyntaxTree).GetTypeInfo(expression);
+            var type = typeInfo.ConvertedType ?? typeInfo.Type;
+            return type is null || type.SpecialType == SpecialType.System_String;
+        }
+
+        private static bool IsStringBuilderType(ITypeSymbol? type)
+        {
+            return type is not null &&
+                   !IsUnresolvedType(type) &&
+                   string.Equals(type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat), "System.Text.StringBuilder", StringComparison.Ordinal);
+        }
+
+        private static bool IsUnresolvedType(ITypeSymbol? type)
+        {
+            return type is null || type.TypeKind == TypeKind.Error;
+        }
+
+        private static bool IsStringBuilderTypeName(string typeName)
+        {
+            return string.Equals(typeName, "StringBuilder", StringComparison.Ordinal) ||
+                   string.Equals(typeName, "System.Text.StringBuilder", StringComparison.Ordinal);
         }
 
         private static IReadOnlyList<ExpressionSyntax> FindObjectMemberValues(MethodDeclarationSyntax? scope, string objectName, string memberName, int beforePosition)
@@ -1178,6 +1518,10 @@ public sealed class SimpleSourceAnalyzer
         }
 
         private sealed record TrackedAssignment(ExpressionSyntax Expression, bool IsConditional);
+
+        private sealed record StringBuilderCreation(ExpressionSyntax Expression, int Position, IReadOnlyList<ArgumentSyntax> Arguments);
+
+        private sealed record StringBuilderMutation(InvocationExpressionSyntax Invocation, string MethodName, IReadOnlyList<ArgumentSyntax> Arguments, SyntaxNode? ControlNode);
     }
 
     private sealed record SqlObject(string ObjectType, string ObjectName, string FullName, string Operation, string SqlRole);

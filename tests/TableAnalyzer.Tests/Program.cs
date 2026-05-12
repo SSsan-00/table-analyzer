@@ -18,6 +18,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves member constants and properties", Tests.AnalyzerResolvesMemberConstantsAndProperties),
     ("analyzer resolves branch and loop assignment candidates", Tests.AnalyzerResolvesBranchAndLoopAssignmentCandidates),
     ("analyzer resolves simple object state", Tests.AnalyzerResolvesSimpleObjectState),
+    ("analyzer resolves string builder sql", Tests.AnalyzerResolvesStringBuilderSql),
+    ("analyzer resolves string builder branch candidates", Tests.AnalyzerResolvesStringBuilderBranchCandidates),
     ("analyzer extracts dynamic table placeholders with t-sql ast", Tests.AnalyzerExtractsDynamicTablePlaceholdersWithTsqlAst),
     ("analyzer emits candidates from conditional helper method", Tests.AnalyzerEmitsCandidatesFromConditionalHelperMethod),
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
@@ -400,6 +402,67 @@ internal static class Tests
 
         Assert.Single(result.TableUsages);
         Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesStringBuilderSql()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            using System.Text;
+
+            class UserService
+            {
+                void Run()
+                {
+                    var table = "Users";
+                    var builder = new StringBuilder("SELECT *");
+                    builder.Append(" FROM dbo.");
+                    builder.AppendLine(table);
+                    builder.AppendFormat(" WHERE Status = {0}", "@status");
+                    db.Query(builder.ToString());
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("certain", result.TableUsages[0].Confidence);
+    }
+
+    public static void AnalyzerResolvesStringBuilderBranchCandidates()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/OrderService.cs", """
+            using System.Text;
+
+            class OrderService
+            {
+                void Run(bool archive)
+                {
+                    var builder = new StringBuilder();
+                    builder.Append("SELECT * FROM dbo.");
+                    if (archive)
+                    {
+                        builder.Append("OrdersArchive");
+                    }
+                    else
+                    {
+                        builder.Append("Orders");
+                    }
+
+                    db.Query(builder.ToString());
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/OrderService.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(2, result.TableUsages.Count);
+        Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.Orders");
+        Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.OrdersArchive");
+        Assert.All(result.TableUsages, row => Assert.Equal("probable", row.Confidence));
     }
 
     public static void AnalyzerExtractsDynamicTablePlaceholdersWithTsqlAst()

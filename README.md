@@ -20,6 +20,7 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - SQL実行メソッドの引数からSQL文字列を追跡
 - SQL実行メソッド検出では、SemanticModelで解決できる非SQLの通常メソッド呼び出しを除外
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
+- `StringBuilder` の初期値、`Append`、`AppendLine`、`AppendFormat`、`ToString()` を解析
 - ローカル変数、クラス定数、`static readonly`、フィールド初期化、プロパティ、単純なオブジェクト初期化/プロパティ代入を追跡
 - `if` / ループ内代入 / 三項演算子 / switch式などから候補を複数出力
 - T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
