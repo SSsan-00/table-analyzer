@@ -2,7 +2,7 @@
 
 Table Analyzer は、C# / Razor Pages のソースコードを読み取り専用で解析し、SQLで利用しているテーブル候補をCSVに出力するツールです。CLI と Windows GUI を用意しています。
 
-C#ソースは Roslyn の構文木と SemanticModel で解析します。コメント内の `db.Query(...)` のような文字列は実行コードとして扱いません。
+C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本文は SQL Server / T-SQL 前提で AST 解析します。コメント内の `db.Query(...)` のような文字列は実行コードとして扱いません。
 
 ## 対象環境
 
@@ -18,8 +18,10 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。コメ�
 - 解析対象外のプロジェクト内ファイルにある helper メソッドの戻り値をリンクして解析
 - `using` / namespace / overload を考慮して helper メソッド呼び出しを優先解決
 - SQL実行メソッドの引数からSQL文字列を追跡
+- SQL実行メソッド検出では、SemanticModelで解決できる非SQLの通常メソッド呼び出しを除外
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
 - `if` / 三項演算子 / switch式などから候補を複数出力
+- T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
 - UTF-8 / Shift-JIS(CP932) のソースを読み取り
 - CSVは UTF-8 BOM付きで出力
 

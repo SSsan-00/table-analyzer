@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace TableAnalyzer.Core;
 
@@ -41,7 +42,7 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            AnalyzeFile(file, parsed.Root, methods, configuration, result, ids);
+            AnalyzeFile(file, parsed.Root, methods, semanticContext, configuration, result, ids);
             completed++;
             progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
         }
@@ -122,12 +123,13 @@ public sealed class SimpleSourceAnalyzer
         SourceFile file,
         CompilationUnitSyntax root,
         MethodIndex methods,
+        SemanticAnalysisContext semanticContext,
         AnalyzerConfiguration configuration,
         AnalysisResult result,
         IdSequence ids)
     {
         var evaluator = new ExpressionEvaluator(methods, configuration);
-        foreach (var invocation in FindSqlInvocations(root, configuration).OrderBy(invocation => invocation.Syntax.SpanStart))
+        foreach (var invocation in FindSqlInvocations(root, configuration, semanticContext).OrderBy(invocation => invocation.Syntax.SpanStart))
         {
             var sqlId = ids.NextSqlId();
             var location = GetLocation(invocation.Syntax);
@@ -198,9 +200,13 @@ public sealed class SimpleSourceAnalyzer
         }
     }
 
-    private static IReadOnlyList<SqlInvocation> FindSqlInvocations(CompilationUnitSyntax root, AnalyzerConfiguration configuration)
+    private static IReadOnlyList<SqlInvocation> FindSqlInvocations(
+        CompilationUnitSyntax root,
+        AnalyzerConfiguration configuration,
+        SemanticAnalysisContext semanticContext)
     {
         var invocations = new List<SqlInvocation>();
+        var model = semanticContext.GetModel(root.SyntaxTree);
         foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             var methodName = GetCallableName(invocation.Expression);
@@ -209,8 +215,7 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            var spec = configuration.SqlExecutionMethods.FirstOrDefault(item =>
-                string.Equals(item.Name, methodName, StringComparison.Ordinal));
+            var spec = ResolveSqlExecutionInvocation(invocation, methodName, configuration, model);
             if (spec is null || spec.SqlArgumentIndex >= invocation.ArgumentList.Arguments.Count)
             {
                 continue;
@@ -222,8 +227,7 @@ public sealed class SimpleSourceAnalyzer
         foreach (var creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
         {
             var typeName = GetTypeName(creation.Type);
-            var spec = configuration.SqlExecutionMethods.FirstOrDefault(item =>
-                string.Equals(item.Name, typeName, StringComparison.Ordinal));
+            var spec = ResolveSqlCommandCreation(creation, typeName, configuration, model);
             if (spec is null || creation.ArgumentList is null || spec.SqlArgumentIndex >= creation.ArgumentList.Arguments.Count)
             {
                 continue;
@@ -233,6 +237,107 @@ public sealed class SimpleSourceAnalyzer
         }
 
         return invocations;
+    }
+
+    private static SqlExecutionMethodSpec? ResolveSqlExecutionInvocation(
+        InvocationExpressionSyntax invocation,
+        string methodName,
+        AnalyzerConfiguration configuration,
+        SemanticModel model)
+    {
+        var specs = configuration.SqlExecutionMethods
+            .Where(item => string.Equals(item.Name, methodName, StringComparison.Ordinal))
+            .ToArray();
+        if (specs.Length == 0)
+        {
+            return null;
+        }
+
+        var symbolInfo = model.GetSymbolInfo(invocation);
+        var methodSymbol = symbolInfo.Symbol as IMethodSymbol
+            ?? symbolInfo.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
+        if (methodSymbol is not null)
+        {
+            if (specs.Any(spec => IsConfiguredTypeMatch(methodSymbol, spec)) ||
+                IsKnownSqlExecutionMethod(methodSymbol))
+            {
+                return specs[0];
+            }
+
+            return null;
+        }
+
+        return IsUnqualifiedInvocation(invocation)
+            ? null
+            : specs[0];
+    }
+
+    private static SqlExecutionMethodSpec? ResolveSqlCommandCreation(
+        ObjectCreationExpressionSyntax creation,
+        string typeName,
+        AnalyzerConfiguration configuration,
+        SemanticModel model)
+    {
+        var spec = configuration.SqlExecutionMethods.FirstOrDefault(item =>
+            string.Equals(item.Name, typeName, StringComparison.Ordinal));
+        if (spec is null)
+        {
+            return null;
+        }
+
+        var type = model.GetTypeInfo(creation.Type).Type;
+        if (type is null)
+        {
+            return spec;
+        }
+
+        return IsKnownSqlCommandType(type)
+            ? spec
+            : null;
+    }
+
+    private static bool IsConfiguredTypeMatch(IMethodSymbol method, SqlExecutionMethodSpec spec)
+    {
+        return !string.IsNullOrWhiteSpace(spec.TypeName) &&
+               IsTypeNameMatch(method.ContainingType, spec.TypeName!);
+    }
+
+    private static bool IsKnownSqlExecutionMethod(IMethodSymbol method)
+    {
+        var original = method.ReducedFrom ?? method.OriginalDefinition;
+        var containingType = original.ContainingType;
+        if (containingType is null)
+        {
+            return false;
+        }
+
+        var typeName = containingType.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+        return typeName is "Dapper.SqlMapper" ||
+               typeName is "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions" ||
+               typeName is "Microsoft.EntityFrameworkCore.RelationalQueryableExtensions";
+    }
+
+    private static bool IsKnownSqlCommandType(ITypeSymbol type)
+    {
+        var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+        return typeName is "System.Data.SqlClient.SqlCommand" or "Microsoft.Data.SqlClient.SqlCommand";
+    }
+
+    private static bool IsTypeNameMatch(INamedTypeSymbol? type, string expectedTypeName)
+    {
+        if (type is null)
+        {
+            return false;
+        }
+
+        var displayName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+        return string.Equals(displayName, expectedTypeName, StringComparison.Ordinal) ||
+               string.Equals(type.Name, expectedTypeName, StringComparison.Ordinal);
+    }
+
+    private static bool IsUnqualifiedInvocation(InvocationExpressionSyntax invocation)
+    {
+        return invocation.Expression is IdentifierNameSyntax or GenericNameSyntax;
     }
 
     private static string? GetCallableName(ExpressionSyntax expression)
@@ -837,65 +942,207 @@ public sealed class SimpleSourceAnalyzer
 
     private static class SqlObjectExtractor
     {
-        private const string NamePattern = @"(?<name>(?:[#@]?\[[^\]]+\]|[#@]?[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\})(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}))*)";
-
         public static IReadOnlyList<SqlObject> Extract(string sql)
         {
-            var ctes = CollectCteNames(sql);
-            var objects = new List<SqlObject>();
-            AddMatches(objects, sql, ctes, @"\bFROM\s+" + NamePattern, "SELECT", "Source");
-            AddMatches(objects, sql, ctes, @"\bJOIN\s+" + NamePattern, "SELECT", "Join");
-            AddMatches(objects, sql, ctes, @"\bUPDATE\s+" + NamePattern, "UPDATE", "Target");
-            AddMatches(objects, sql, ctes, @"\bINSERT\s+INTO\s+" + NamePattern, "INSERT", "Target");
-            AddMatches(objects, sql, ctes, @"\bDELETE\s+FROM\s+" + NamePattern, "DELETE", "Target");
-            AddMatches(objects, sql, ctes, @"\bMERGE\s+(?:INTO\s+)?" + NamePattern, "MERGE", "Target");
-            AddMatches(objects, sql, ctes, @"\bEXEC(?:UTE)?\s+" + NamePattern, "EXEC", "Procedure");
-            return objects;
+            var parser = new TSql160Parser(initialQuotedIdentifiers: true);
+            using var reader = new StringReader(sql);
+            var fragment = parser.Parse(reader, out var errors);
+            if (errors.Count > 0)
+            {
+                return [];
+            }
+
+            var visitor = new TsqlObjectVisitor();
+            fragment.Accept(visitor);
+            return visitor.Objects;
         }
 
-        private static void AddMatches(List<SqlObject> objects, string sql, HashSet<string> ctes, string pattern, string operation, string role)
+        private sealed class TsqlObjectVisitor : TSqlFragmentVisitor
         {
-            foreach (Match match in Regex.Matches(sql, pattern, RegexOptions.IgnoreCase))
+            private readonly HashSet<string> _cteNames = new(StringComparer.OrdinalIgnoreCase);
+            private readonly Stack<SqlObjectContext> _contexts = new();
+            private readonly List<SqlObject> _objects = [];
+
+            public IReadOnlyList<SqlObject> Objects => _objects;
+
+            public override void ExplicitVisit(CommonTableExpression node)
             {
-                if (operation == "SELECT" && role == "Source" && Regex.IsMatch(sql[..match.Index].TrimEnd(), @"\bDELETE\s*$", RegexOptions.IgnoreCase))
+                if (node.ExpressionName is not null)
                 {
-                    continue;
+                    _cteNames.Add(node.ExpressionName.Value);
                 }
 
-                var fullName = NormalizeName(match.Groups["name"].Value);
-                if (ctes.Contains(fullName, StringComparer.OrdinalIgnoreCase))
+                node.QueryExpression?.Accept(this);
+            }
+
+            public override void ExplicitVisit(InsertStatement node)
+            {
+                var specification = node.InsertSpecification;
+                VisitTableReference(specification.Target, "INSERT", "Target");
+                specification.InsertSource?.Accept(this);
+                specification.OutputClause?.Accept(this);
+                specification.OutputIntoClause?.Accept(this);
+            }
+
+            public override void ExplicitVisit(UpdateStatement node)
+            {
+                var specification = node.UpdateSpecification;
+                VisitTableReference(specification.Target, "UPDATE", "Target");
+                specification.FromClause?.Accept(this);
+                specification.WhereClause?.Accept(this);
+                specification.OutputClause?.Accept(this);
+                specification.OutputIntoClause?.Accept(this);
+                foreach (var setClause in specification.SetClauses)
                 {
-                    continue;
+                    setClause.Accept(this);
+                }
+            }
+
+            public override void ExplicitVisit(DeleteStatement node)
+            {
+                var specification = node.DeleteSpecification;
+                VisitTableReference(specification.Target, "DELETE", "Target");
+                specification.FromClause?.Accept(this);
+                specification.WhereClause?.Accept(this);
+                specification.OutputClause?.Accept(this);
+                specification.OutputIntoClause?.Accept(this);
+            }
+
+            public override void ExplicitVisit(MergeStatement node)
+            {
+                var specification = node.MergeSpecification;
+                VisitTableReference(specification.Target, "MERGE", "Target");
+                VisitTableReference(specification.TableReference, "MERGE", "Source");
+                specification.SearchCondition?.Accept(this);
+                foreach (var actionClause in specification.ActionClauses)
+                {
+                    actionClause.Accept(this);
+                }
+                specification.OutputClause?.Accept(this);
+                specification.OutputIntoClause?.Accept(this);
+            }
+
+            public override void ExplicitVisit(FromClause node)
+            {
+                foreach (var tableReference in node.TableReferences)
+                {
+                    VisitTableReference(tableReference, "SELECT", "Source");
                 }
 
+                foreach (var predictTableReference in node.PredictTableReference)
+                {
+                    predictTableReference.Accept(this);
+                }
+            }
+
+            public override void ExplicitVisit(NamedTableReference node)
+            {
+                if (_contexts.TryPeek(out var context))
+                {
+                    AddSchemaObject(node.SchemaObject, context.Operation, context.Role, "TableOrView");
+                }
+            }
+
+            public override void ExplicitVisit(SchemaObjectFunctionTableReference node)
+            {
+                if (_contexts.TryPeek(out var context))
+                {
+                    AddSchemaObject(node.SchemaObject, context.Operation, context.Role, "TableOrView");
+                }
+            }
+
+            public override void ExplicitVisit(VariableTableReference node)
+            {
+                if (_contexts.TryPeek(out var context))
+                {
+                    AddObject(node.Variable.Name, context.Operation, context.Role, "TableVariable");
+                }
+            }
+
+            public override void ExplicitVisit(ExecuteStatement node)
+            {
+                if (node.ExecuteSpecification.ExecutableEntity is ExecutableProcedureReference procedureReference &&
+                    procedureReference.ProcedureReference?.ProcedureReference?.Name is not null)
+                {
+                    AddObject(FormatSchemaObjectName(procedureReference.ProcedureReference.ProcedureReference.Name), "EXEC", "Procedure", "Procedure");
+                }
+
+                node.ExecuteSpecification.AcceptChildren(this);
+            }
+
+            private void VisitTableReference(TableReference? tableReference, string operation, string role)
+            {
+                switch (tableReference)
+                {
+                    case null:
+                        return;
+                    case JoinTableReference join:
+                        VisitTableReference(join.FirstTableReference, operation, role);
+                        VisitTableReference(join.SecondTableReference, operation, "Join");
+                        if (join is QualifiedJoin qualifiedJoin)
+                        {
+                            qualifiedJoin.SearchCondition?.Accept(this);
+                        }
+                        return;
+                    default:
+                        WithContext(operation, role, () => tableReference.Accept(this));
+                        return;
+                }
+            }
+
+            private void WithContext(string operation, string role, Action action)
+            {
+                _contexts.Push(new SqlObjectContext(operation, role));
+                try
+                {
+                    action();
+                }
+                finally
+                {
+                    _contexts.Pop();
+                }
+            }
+
+            private void AddSchemaObject(SchemaObjectName schemaObject, string operation, string role, string objectType)
+            {
+                AddObject(FormatSchemaObjectName(schemaObject), operation, role, objectType);
+            }
+
+            private void AddObject(string fullName, string operation, string role, string objectType)
+            {
+                if (string.IsNullOrWhiteSpace(fullName) || _cteNames.Contains(fullName))
+                {
+                    return;
+                }
+
+                var resolvedObjectType = objectType == "TableOrView"
+                    ? ClassifyTableObject(fullName)
+                    : objectType;
                 var objectName = fullName.Split('.', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? fullName;
-                var objectType = operation == "EXEC"
-                    ? "Procedure"
-                    : fullName.StartsWith('#') ? "TempTable"
-                    : fullName.StartsWith('@') ? "TableVariable"
-                    : fullName.Contains('{', StringComparison.Ordinal) ? "Unknown"
-                    : "TableOrView";
-
-                objects.Add(new SqlObject(objectType, objectName, fullName, operation, role));
+                _objects.Add(new SqlObject(resolvedObjectType, objectName, fullName, operation, role));
             }
-        }
 
-        private static HashSet<string> CollectCteNames(string sql)
-        {
-            var ctes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (Match match in Regex.Matches(sql, @"\bWITH\s+(?<name>\[?[A-Za-z_][A-Za-z0-9_]*\]?)\s+AS\s*\(", RegexOptions.IgnoreCase))
+            private static string ClassifyTableObject(string fullName)
             {
-                ctes.Add(NormalizeName(match.Groups["name"].Value));
+                if (fullName.StartsWith('#'))
+                {
+                    return "TempTable";
+                }
+
+                if (fullName.StartsWith('@'))
+                {
+                    return "TableVariable";
+                }
+
+                return "TableOrView";
             }
 
-            return ctes;
+            private static string FormatSchemaObjectName(SchemaObjectName name)
+            {
+                return string.Join(".", name.Identifiers.Select(identifier => identifier.Value));
+            }
         }
 
-        private static string NormalizeName(string name)
-        {
-            return Regex.Replace(name, @"\s+", "")
-                .Replace("[", "", StringComparison.Ordinal)
-                .Replace("]", "", StringComparison.Ordinal);
-        }
+        private sealed record SqlObjectContext(string Operation, string Role);
     }
 }

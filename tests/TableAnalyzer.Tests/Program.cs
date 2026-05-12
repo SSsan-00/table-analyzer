@@ -20,6 +20,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
+    ("analyzer parses merge source and target with t-sql ast", Tests.AnalyzerParsesMergeSourceAndTargetWithTsqlAst),
+    ("analyzer ignores source local execute method", Tests.AnalyzerIgnoresSourceLocalExecuteMethod),
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
@@ -428,6 +430,60 @@ internal static class Tests
         Assert.Equal("SELECT", source.Operation);
         Assert.Equal("Source", source.SqlRole);
         Assert.Equal(target.SqlId, source.SqlId);
+    }
+
+    public static void AnalyzerParsesMergeSourceAndTargetWithTsqlAst()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/MergeService.cs", """"
+            class MergeService
+            {
+                void Run()
+                {
+                    var sql = @"MERGE INTO dbo.TargetUsers AS target
+                        USING dbo.SourceUsers AS source
+                        ON target.Id = source.Id
+                        WHEN MATCHED THEN
+                            UPDATE SET Name = source.Name
+                        WHEN NOT MATCHED THEN
+                            INSERT (Id, Name) VALUES (source.Id, source.Name);";
+                    db.Execute(sql);
+                }
+            }
+            """");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/MergeService.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(2, result.TableUsages.Count);
+
+        var target = result.TableUsages.Single(row => row.FullName == "dbo.TargetUsers");
+        Assert.Equal("MERGE", target.Operation);
+        Assert.Equal("Target", target.SqlRole);
+
+        var source = result.TableUsages.Single(row => row.FullName == "dbo.SourceUsers");
+        Assert.Equal("MERGE", source.Operation);
+        Assert.Equal("Source", source.SqlRole);
+    }
+
+    public static void AnalyzerIgnoresSourceLocalExecuteMethod()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/Worker.cs", """
+            class Worker
+            {
+                string Execute(string value) => value;
+
+                void Run()
+                {
+                    Execute("SELECT * FROM dbo.NotSql");
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/Worker.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(0, result.TableUsages.Count);
+        Assert.Equal(0, result.SqlSnippets.Count);
     }
 
     public static void AnalyzerReportsFileProgress()
