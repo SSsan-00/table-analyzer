@@ -17,6 +17,9 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves helper method overload by argument type", Tests.AnalyzerResolvesHelperMethodOverloadByArgumentType),
     ("analyzer resolves member constants and properties", Tests.AnalyzerResolvesMemberConstantsAndProperties),
     ("analyzer resolves branch and loop assignment candidates", Tests.AnalyzerResolvesBranchAndLoopAssignmentCandidates),
+    ("analyzer drops overwritten value after complete branch assignment", Tests.AnalyzerDropsOverwrittenValueAfterCompleteBranchAssignment),
+    ("analyzer ignores assignments from terminating branch", Tests.AnalyzerIgnoresAssignmentsFromTerminatingBranch),
+    ("analyzer ignores shadowed local values", Tests.AnalyzerIgnoresShadowedLocalValues),
     ("analyzer resolves simple object state", Tests.AnalyzerResolvesSimpleObjectState),
     ("analyzer resolves string builder sql", Tests.AnalyzerResolvesStringBuilderSql),
     ("analyzer resolves string builder branch candidates", Tests.AnalyzerResolvesStringBuilderBranchCandidates),
@@ -25,6 +28,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
+    ("analyzer ignores sql method name on non sql receiver", Tests.AnalyzerIgnoresSqlMethodNameOnNonSqlReceiver),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
     ("analyzer parses merge source and target with t-sql ast", Tests.AnalyzerParsesMergeSourceAndTargetWithTsqlAst),
     ("analyzer ignores source local execute method", Tests.AnalyzerIgnoresSourceLocalExecuteMethod),
@@ -369,12 +373,96 @@ internal static class Tests
         var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/OrderService.cs")], new AnalyzerConfiguration());
         var names = result.TableUsages.Select(row => row.FullName).ToArray();
 
-        Assert.Equal(4, result.TableUsages.Count);
-        Assert.Contains(names, "dbo.Orders");
+        Assert.Equal(3, result.TableUsages.Count);
         Assert.Contains(names, "dbo.OrdersArchive");
         Assert.Contains(names, "dbo.OrdersCurrent");
         Assert.Contains(names, "dbo.OrdersLoop");
         Assert.All(result.TableUsages, row => Assert.Equal("probable", row.Confidence));
+    }
+
+    public static void AnalyzerDropsOverwrittenValueAfterCompleteBranchAssignment()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/OrderService.cs", """
+            class OrderService
+            {
+                void Run(bool archive)
+                {
+                    var table = "Orders";
+                    if (archive)
+                    {
+                        table = "OrdersArchive";
+                    }
+                    else
+                    {
+                        table = "OrdersCurrent";
+                    }
+
+                    db.Query("SELECT * FROM dbo." + table);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/OrderService.cs")], new AnalyzerConfiguration());
+        var names = result.TableUsages.Select(row => row.FullName).ToArray();
+
+        Assert.Equal(2, result.TableUsages.Count);
+        Assert.DoesNotContain(names, "dbo.Orders");
+        Assert.Contains(names, "dbo.OrdersArchive");
+        Assert.Contains(names, "dbo.OrdersCurrent");
+    }
+
+    public static void AnalyzerIgnoresShadowedLocalValues()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                private const string Table = "Users";
+
+                void Run(bool diagnostic)
+                {
+                    if (diagnostic)
+                    {
+                        var Table = "DebugOnly";
+                        System.Console.WriteLine(Table);
+                    }
+
+                    db.Query("SELECT * FROM dbo." + Table);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerIgnoresAssignmentsFromTerminatingBranch()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/OrderService.cs", """
+            class OrderService
+            {
+                void Run(bool archive)
+                {
+                    var table = "Orders";
+                    if (archive)
+                    {
+                        table = "OrdersArchive";
+                        return;
+                    }
+
+                    db.Query("SELECT * FROM dbo." + table);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/OrderService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Orders", result.TableUsages[0].FullName);
     }
 
     public static void AnalyzerResolvesSimpleObjectState()
@@ -580,6 +668,26 @@ internal static class Tests
         Assert.Single(result.TableUsages);
         Assert.Equal("dbo.Sessions", result.TableUsages[0].FullName);
         Assert.Equal("DELETE", result.TableUsages[0].Operation);
+    }
+
+    public static void AnalyzerIgnoresSqlMethodNameOnNonSqlReceiver()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/TextService.cs", """
+            class TextService
+            {
+                void Run()
+                {
+                    var text = "not a database connection";
+                    text.Query("SELECT * FROM dbo.Users");
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/TextService.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(0, result.TableUsages.Count);
+        Assert.Equal(0, result.SqlSnippets.Count);
     }
 
     public static void AnalyzerReportsInsertSelectTargetAndSource()
@@ -906,6 +1014,14 @@ internal static class Assert
         if (!values.Contains(expected, StringComparer.Ordinal))
         {
             throw new Exception($"Expected collection to contain <{expected}>.");
+        }
+    }
+
+    public static void DoesNotContain(IEnumerable<string> values, string expected)
+    {
+        if (values.Contains(expected, StringComparer.Ordinal))
+        {
+            throw new Exception($"Expected collection not to contain <{expected}>.");
         }
     }
 

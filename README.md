@@ -23,6 +23,7 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - `StringBuilder` の初期値、`Append`、`AppendLine`、`AppendFormat`、`ToString()` を解析
 - ローカル変数、クラス定数、`static readonly`、フィールド初期化、プロパティ、単純なオブジェクト初期化/プロパティ代入を追跡
 - `if` / ループ内代入 / 三項演算子 / switch式などから候補を複数出力
+- 変数のシンボル一致、完全な `if/else` 上書き、`return` / `throw` 枝を考慮して過剰候補を抑制
 - T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
 - 動的テーブル名の `{table}` 形式プレースホルダを保持したままT-SQL AST解析
 - UTF-8 / Shift-JIS(CP932) のソースを読み取り

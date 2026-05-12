@@ -256,21 +256,33 @@ public sealed class SimpleSourceAnalyzer
         var symbolInfo = model.GetSymbolInfo(invocation);
         var methodSymbol = symbolInfo.Symbol as IMethodSymbol
             ?? symbolInfo.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
-        if (methodSymbol is not null)
-        {
-            if (specs.Any(spec => IsConfiguredTypeMatch(methodSymbol, spec)) ||
-                IsKnownSqlExecutionMethod(methodSymbol))
+            if (methodSymbol is not null)
             {
+                if (specs.Any(spec => IsConfiguredTypeMatch(methodSymbol, spec)) ||
+                    IsKnownSqlExecutionMethod(methodSymbol))
+                {
                 return specs[0];
             }
 
-            return null;
-        }
+                return null;
+            }
 
-        return IsUnqualifiedInvocation(invocation)
-            ? null
-            : specs[0];
-    }
+            if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+            {
+                var receiverType = model.GetTypeInfo(memberAccess.Expression).Type;
+                if (IsResolvedNonDynamicType(receiverType))
+                {
+                    return specs.Any(spec => IsConfiguredReceiverTypeMatch(receiverType, spec)) ||
+                           IsKnownSqlReceiverType(receiverType)
+                        ? specs[0]
+                        : null;
+                }
+            }
+
+            return IsUnqualifiedInvocation(invocation)
+                ? null
+                : specs[0];
+        }
 
     private static SqlExecutionMethodSpec? ResolveSqlCommandCreation(
         ObjectCreationExpressionSyntax creation,
@@ -296,16 +308,22 @@ public sealed class SimpleSourceAnalyzer
             : null;
     }
 
-    private static bool IsConfiguredTypeMatch(IMethodSymbol method, SqlExecutionMethodSpec spec)
-    {
-        return !string.IsNullOrWhiteSpace(spec.TypeName) &&
-               IsTypeNameMatch(method.ContainingType, spec.TypeName!);
-    }
+        private static bool IsConfiguredTypeMatch(IMethodSymbol method, SqlExecutionMethodSpec spec)
+        {
+            return !string.IsNullOrWhiteSpace(spec.TypeName) &&
+                   IsTypeNameMatch(method.ContainingType, spec.TypeName!);
+        }
 
-    private static bool IsKnownSqlExecutionMethod(IMethodSymbol method)
-    {
-        var original = method.ReducedFrom ?? method.OriginalDefinition;
-        var containingType = original.ContainingType;
+        private static bool IsConfiguredReceiverTypeMatch(ITypeSymbol? type, SqlExecutionMethodSpec spec)
+        {
+            return !string.IsNullOrWhiteSpace(spec.TypeName) &&
+                   IsTypeNameMatch(type, spec.TypeName!);
+        }
+
+        private static bool IsKnownSqlExecutionMethod(IMethodSymbol method)
+        {
+            var original = method.ReducedFrom ?? method.OriginalDefinition;
+            var containingType = original.ContainingType;
         if (containingType is null)
         {
             return false;
@@ -315,19 +333,42 @@ public sealed class SimpleSourceAnalyzer
         return typeName is "Dapper.SqlMapper" ||
                typeName is "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions" ||
                typeName is "Microsoft.EntityFrameworkCore.RelationalQueryableExtensions";
-    }
+        }
 
-    private static bool IsKnownSqlCommandType(ITypeSymbol type)
-    {
-        var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
-        return typeName is "System.Data.SqlClient.SqlCommand" or "Microsoft.Data.SqlClient.SqlCommand";
-    }
-
-    private static bool IsTypeNameMatch(INamedTypeSymbol? type, string expectedTypeName)
-    {
-        if (type is null)
+        private static bool IsKnownSqlReceiverType(ITypeSymbol? type)
         {
-            return false;
+            if (type is null)
+            {
+                return false;
+            }
+
+            var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+            return typeName is "System.Data.IDbConnection" ||
+                   typeName is "System.Data.Common.DbConnection" ||
+                   typeName is "System.Data.SqlClient.SqlConnection" ||
+                   typeName is "Microsoft.Data.SqlClient.SqlConnection" ||
+                   typeName is "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade" ||
+                   typeName is "Microsoft.EntityFrameworkCore.DbSet" ||
+                   typeName.StartsWith("Microsoft.EntityFrameworkCore.DbSet<", StringComparison.Ordinal);
+        }
+
+        private static bool IsKnownSqlCommandType(ITypeSymbol type)
+        {
+            var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+            return typeName is "System.Data.SqlClient.SqlCommand" or "Microsoft.Data.SqlClient.SqlCommand";
+        }
+
+        private static bool IsResolvedNonDynamicType(ITypeSymbol? type)
+        {
+            return type is not null &&
+                   type.TypeKind is not TypeKind.Error and not TypeKind.Dynamic;
+        }
+
+        private static bool IsTypeNameMatch(ITypeSymbol? type, string expectedTypeName)
+        {
+            if (type is null)
+            {
+                return false;
         }
 
         var displayName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
@@ -661,7 +702,7 @@ public sealed class SimpleSourceAnalyzer
                 return parameterValue;
             }
 
-            var localExpressions = FindLocalValues(scope, name, identifier.SpanStart);
+            var localExpressions = FindLocalValues(scope, identifier);
             if (localExpressions.Count > 0)
             {
                 var value = CombineAlternatives(
@@ -690,7 +731,7 @@ public sealed class SimpleSourceAnalyzer
         {
             if (memberAccess.Expression is IdentifierNameSyntax receiver)
             {
-                var memberExpressions = FindObjectMemberValues(scope, receiver.Identifier.ValueText, memberAccess.Name.Identifier.ValueText, memberAccess.SpanStart);
+                var memberExpressions = FindObjectMemberValues(scope, receiver, memberAccess.Name.Identifier.ValueText, memberAccess.SpanStart);
                 if (memberExpressions.Count > 0)
                 {
                     return CombineAlternatives(
@@ -793,7 +834,7 @@ public sealed class SimpleSourceAnalyzer
                 return false;
             }
 
-            var stringBuilderValue = EvaluateStringBuilderValue(receiver.Identifier.ValueText, scope, invocation.SpanStart, parameters, depth, activeMethods);
+            var stringBuilderValue = EvaluateStringBuilderValue(receiver, scope, invocation.SpanStart, parameters, depth, activeMethods);
             if (stringBuilderValue is null)
             {
                 return false;
@@ -809,7 +850,7 @@ public sealed class SimpleSourceAnalyzer
         }
 
         private SymbolicValue? EvaluateStringBuilderValue(
-            string builderName,
+            IdentifierNameSyntax receiver,
             MethodDeclarationSyntax? scope,
             int beforePosition,
             IReadOnlyDictionary<string, SymbolicValue> parameters,
@@ -821,14 +862,20 @@ public sealed class SimpleSourceAnalyzer
                 return null;
             }
 
-            var creation = FindStringBuilderCreation(scope, builderName, beforePosition);
+            var builderSymbol = GetSymbol(receiver);
+            if (builderSymbol is null)
+            {
+                return null;
+            }
+
+            var creation = FindStringBuilderCreation(scope, receiver.Identifier.ValueText, builderSymbol, beforePosition);
             if (creation is null)
             {
                 return null;
             }
 
             var current = EvaluateStringBuilderInitialValue(creation, scope, parameters, depth, activeMethods);
-            var mutations = FindStringBuilderMutations(scope.Body, builderName, creation.Position, beforePosition);
+            var mutations = FindStringBuilderMutations(scope.Body, receiver.Identifier.ValueText, builderSymbol, creation.Position, beforePosition);
             for (var index = 0; index < mutations.Count;)
             {
                 var controlNode = mutations[index].ControlNode;
@@ -936,40 +983,210 @@ public sealed class SimpleSourceAnalyzer
             }
         }
 
-        private static IReadOnlyList<ExpressionSyntax> FindLocalValues(MethodDeclarationSyntax? scope, string name, int beforePosition)
+        private IReadOnlyList<ExpressionSyntax> FindLocalValues(MethodDeclarationSyntax? scope, IdentifierNameSyntax identifier)
         {
             if (scope?.Body is null)
             {
                 return [];
             }
 
-            ExpressionSyntax? current = null;
-            var branched = new List<ExpressionSyntax>();
-            foreach (var assignment in EnumerateLocalAssignments(scope.Body, name, beforePosition))
+            var targetSymbol = GetSymbol(identifier);
+            if (targetSymbol is not ILocalSymbol)
             {
-                if (assignment.IsConditional)
-                {
-                    branched.Add(assignment.Expression);
-                    continue;
-                }
-
-                current = assignment.Expression;
-                branched.Clear();
+                return [];
             }
 
-            var values = new List<ExpressionSyntax>();
-            if (current is not null)
-            {
-                values.Add(current);
-            }
-
-            values.AddRange(branched);
-            return values
-                .Distinct()
+            return TrackLocalValueStatements(scope.Body.Statements, targetSymbol, identifier.SpanStart, [])
+                .DistinctBy(expression => expression.ToString())
                 .ToArray();
         }
 
-        private StringBuilderCreation? FindStringBuilderCreation(MethodDeclarationSyntax scope, string name, int beforePosition)
+        private IReadOnlyList<ExpressionSyntax> TrackLocalValueStatements(
+            IEnumerable<StatementSyntax> statements,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            var values = current.ToList();
+            foreach (var statement in statements.OrderBy(statement => statement.SpanStart))
+            {
+                if (statement.SpanStart >= beforePosition)
+                {
+                    continue;
+                }
+
+                values = TrackLocalValueStatement(statement, targetSymbol, beforePosition, values).ToList();
+            }
+
+            return values;
+        }
+
+        private IReadOnlyList<ExpressionSyntax> TrackLocalValueStatement(
+            StatementSyntax statement,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            switch (statement)
+            {
+                case BlockSyntax block:
+                    return TrackLocalValueStatements(block.Statements, targetSymbol, beforePosition, current);
+                case LocalDeclarationStatementSyntax localDeclaration:
+                    return TrackLocalDeclaration(localDeclaration, targetSymbol, beforePosition, current);
+                case ExpressionStatementSyntax expressionStatement:
+                    return TryGetLocalAssignment(expressionStatement.Expression, targetSymbol, beforePosition, out var assigned)
+                        ? [assigned]
+                        : current;
+                case IfStatementSyntax ifStatement:
+                    return TrackIfLocalValues(ifStatement, targetSymbol, beforePosition, current);
+                case SwitchStatementSyntax switchStatement:
+                    return TrackSwitchLocalValues(switchStatement, targetSymbol, beforePosition, current);
+                case ForStatementSyntax forStatement:
+                    return TrackLoopLocalValues(forStatement.Statement, targetSymbol, beforePosition, current);
+                case ForEachStatementSyntax forEachStatement:
+                    return TrackLoopLocalValues(forEachStatement.Statement, targetSymbol, beforePosition, current);
+                case WhileStatementSyntax whileStatement:
+                    return TrackLoopLocalValues(whileStatement.Statement, targetSymbol, beforePosition, current);
+                case DoStatementSyntax doStatement:
+                    return TrackLoopLocalValues(doStatement.Statement, targetSymbol, beforePosition, current);
+                default:
+                    return current;
+            }
+        }
+
+        private IReadOnlyList<ExpressionSyntax> TrackLocalDeclaration(
+            LocalDeclarationStatementSyntax localDeclaration,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            var values = current;
+            foreach (var declarator in localDeclaration.Declaration.Variables)
+            {
+                if (declarator.SpanStart >= beforePosition ||
+                    declarator.Initializer?.Value is null ||
+                    !IsTargetDeclaration(declarator, targetSymbol))
+                {
+                    continue;
+                }
+
+                values = [declarator.Initializer.Value];
+            }
+
+            return values;
+        }
+
+        private IReadOnlyList<ExpressionSyntax> TrackIfLocalValues(
+            IfStatementSyntax ifStatement,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            var thenValues = TrackLocalValueBranch(ifStatement.Statement, targetSymbol, beforePosition, current);
+            var thenContinues = !AlwaysTerminates(ifStatement.Statement);
+            if (ifStatement.Else?.Statement is not { } elseStatement)
+            {
+                return thenContinues
+                    ? MergeExpressionValues(current, thenValues)
+                    : current;
+            }
+
+            var elseValues = TrackLocalValueBranch(elseStatement, targetSymbol, beforePosition, current);
+            var elseContinues = !AlwaysTerminates(elseStatement);
+            return (thenContinues, elseContinues) switch
+            {
+                (true, true) => MergeExpressionValues(thenValues, elseValues),
+                (true, false) => thenValues,
+                (false, true) => elseValues,
+                _ => []
+            };
+        }
+
+        private IReadOnlyList<ExpressionSyntax> TrackSwitchLocalValues(
+            SwitchStatementSyntax switchStatement,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            var values = current.ToList();
+            foreach (var section in switchStatement.Sections)
+            {
+                var sectionValues = TrackLocalValueStatements(section.Statements, targetSymbol, beforePosition, current);
+                values.AddRange(sectionValues);
+            }
+
+            return DistinctExpressionValues(values);
+        }
+
+        private IReadOnlyList<ExpressionSyntax> TrackLoopLocalValues(
+            StatementSyntax loopBody,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            var once = TrackLocalValueBranch(loopBody, targetSymbol, beforePosition, current);
+            return MergeExpressionValues(current, once);
+        }
+
+        private IReadOnlyList<ExpressionSyntax> TrackLocalValueBranch(
+            StatementSyntax statement,
+            ISymbol targetSymbol,
+            int beforePosition,
+            IReadOnlyList<ExpressionSyntax> current)
+        {
+            return statement is BlockSyntax block
+                ? TrackLocalValueStatements(block.Statements, targetSymbol, beforePosition, current)
+                : TrackLocalValueStatement(statement, targetSymbol, beforePosition, current);
+        }
+
+        private bool TryGetLocalAssignment(ExpressionSyntax expression, ISymbol targetSymbol, int beforePosition, out ExpressionSyntax value)
+        {
+            value = null!;
+            if (expression is not AssignmentExpressionSyntax assignment ||
+                !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) ||
+                assignment.SpanStart >= beforePosition ||
+                assignment.Left is not IdentifierNameSyntax identifier ||
+                !IsTargetReference(identifier, targetSymbol))
+            {
+                return false;
+            }
+
+            value = assignment.Right;
+            return true;
+        }
+
+        private static IReadOnlyList<ExpressionSyntax> MergeExpressionValues(
+            IReadOnlyList<ExpressionSyntax> first,
+            IReadOnlyList<ExpressionSyntax> second)
+        {
+            return DistinctExpressionValues(first.Concat(second));
+        }
+
+        private static IReadOnlyList<ExpressionSyntax> DistinctExpressionValues(IEnumerable<ExpressionSyntax> values)
+        {
+            return values
+                .DistinctBy(expression => expression.ToString())
+                .ToArray();
+        }
+
+        private bool IsTargetDeclaration(VariableDeclaratorSyntax declarator, ISymbol targetSymbol)
+        {
+            var declaredSymbol = semanticContext.GetModel(declarator.SyntaxTree).GetDeclaredSymbol(declarator);
+            return SymbolEqualityComparer.Default.Equals(declaredSymbol, targetSymbol);
+        }
+
+        private bool IsTargetReference(ExpressionSyntax expression, ISymbol targetSymbol)
+        {
+            return SymbolEqualityComparer.Default.Equals(GetSymbol(expression), targetSymbol);
+        }
+
+        private ISymbol? GetSymbol(ExpressionSyntax expression)
+        {
+            var symbolInfo = semanticContext.GetModel(expression.SyntaxTree).GetSymbolInfo(expression);
+            return symbolInfo.Symbol ?? symbolInfo.CandidateSymbols.FirstOrDefault();
+        }
+
+        private StringBuilderCreation? FindStringBuilderCreation(MethodDeclarationSyntax scope, string name, ISymbol targetSymbol, int beforePosition)
         {
             var creations = new List<StringBuilderCreation>();
             foreach (var declarator in scope.Body?.DescendantNodes().OfType<VariableDeclaratorSyntax>()
@@ -978,7 +1195,8 @@ public sealed class SimpleSourceAnalyzer
                 var declaredType = declarator.Parent is VariableDeclarationSyntax declaration
                     ? declaration.Type
                     : null;
-                if (TryGetStringBuilderCreation(declarator.Initializer!.Value, declaredType, out var arguments))
+                if (IsTargetDeclaration(declarator, targetSymbol) &&
+                    TryGetStringBuilderCreation(declarator.Initializer!.Value, declaredType, out var arguments))
                 {
                     creations.Add(new StringBuilderCreation(declarator.Initializer.Value, declarator.SpanStart, arguments));
                 }
@@ -989,6 +1207,7 @@ public sealed class SimpleSourceAnalyzer
             {
                 if (assignment.Left is IdentifierNameSyntax identifier &&
                     string.Equals(identifier.Identifier.ValueText, name, StringComparison.Ordinal) &&
+                    IsTargetReference(identifier, targetSymbol) &&
                     TryGetStringBuilderCreation(assignment.Right, null, out var arguments))
                 {
                     creations.Add(new StringBuilderCreation(assignment.Right, assignment.SpanStart, arguments));
@@ -1038,27 +1257,29 @@ public sealed class SimpleSourceAnalyzer
             return Evaluate(creation.Arguments[0].Expression, scope, parameters, depth, activeMethods);
         }
 
-        private IReadOnlyList<StringBuilderMutation> FindStringBuilderMutations(BlockSyntax body, string builderName, int afterPosition, int beforePosition)
+        private IReadOnlyList<StringBuilderMutation> FindStringBuilderMutations(BlockSyntax body, string builderName, ISymbol targetSymbol, int afterPosition, int beforePosition)
         {
             return body.DescendantNodes().OfType<InvocationExpressionSyntax>()
                 .Where(invocation => invocation.SpanStart > afterPosition && invocation.SpanStart < beforePosition)
-                .Select(invocation => TryCreateStringBuilderMutation(body, builderName, invocation, out var mutation) ? mutation : null)
+                .Select(invocation => TryCreateStringBuilderMutation(body, builderName, targetSymbol, invocation, out var mutation) ? mutation : null)
                 .Where(mutation => mutation is not null)
                 .Select(mutation => mutation!)
                 .OrderBy(mutation => mutation.Invocation.SpanStart)
                 .ToArray();
         }
 
-        private static bool TryCreateStringBuilderMutation(
+        private bool TryCreateStringBuilderMutation(
             BlockSyntax body,
             string builderName,
+            ISymbol targetSymbol,
             InvocationExpressionSyntax invocation,
             out StringBuilderMutation mutation)
         {
             mutation = null!;
             if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess ||
                 memberAccess.Expression is not IdentifierNameSyntax receiver ||
-                !string.Equals(receiver.Identifier.ValueText, builderName, StringComparison.Ordinal))
+                !string.Equals(receiver.Identifier.ValueText, builderName, StringComparison.Ordinal) ||
+                !IsTargetReference(receiver, targetSymbol))
             {
                 return false;
             }
@@ -1192,6 +1413,19 @@ public sealed class SimpleSourceAnalyzer
             return node == ancestor || node.Ancestors().Any(item => item == ancestor);
         }
 
+        private static bool AlwaysTerminates(StatementSyntax statement)
+        {
+            return statement switch
+            {
+                ReturnStatementSyntax => true,
+                ThrowStatementSyntax => true,
+                BlockSyntax block => block.Statements.Count > 0 && AlwaysTerminates(block.Statements.Last()),
+                IfStatementSyntax ifStatement when ifStatement.Else?.Statement is { } elseStatement =>
+                    AlwaysTerminates(ifStatement.Statement) && AlwaysTerminates(elseStatement),
+                _ => false
+            };
+        }
+
         private bool IsStringLikeExpression(ExpressionSyntax expression)
         {
             var typeInfo = semanticContext.GetModel(expression.SyntaxTree).GetTypeInfo(expression);
@@ -1217,18 +1451,25 @@ public sealed class SimpleSourceAnalyzer
                    string.Equals(typeName, "System.Text.StringBuilder", StringComparison.Ordinal);
         }
 
-        private static IReadOnlyList<ExpressionSyntax> FindObjectMemberValues(MethodDeclarationSyntax? scope, string objectName, string memberName, int beforePosition)
+        private IReadOnlyList<ExpressionSyntax> FindObjectMemberValues(MethodDeclarationSyntax? scope, IdentifierNameSyntax objectIdentifier, string memberName, int beforePosition)
         {
             if (scope?.Body is null)
             {
                 return [];
             }
 
+            var targetSymbol = GetSymbol(objectIdentifier);
+            if (targetSymbol is null)
+            {
+                return [];
+            }
+
             var values = new List<ExpressionSyntax>();
             foreach (var declarator in scope.Body.DescendantNodes().OfType<VariableDeclaratorSyntax>()
-                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == objectName))
+                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == objectIdentifier.Identifier.ValueText))
             {
-                if (declarator.Initializer?.Value is ObjectCreationExpressionSyntax creation &&
+                if (IsTargetDeclaration(declarator, targetSymbol) &&
+                    declarator.Initializer?.Value is ObjectCreationExpressionSyntax creation &&
                     creation.Initializer is not null)
                 {
                     values.AddRange(GetObjectInitializerMemberValues(creation.Initializer, memberName));
@@ -1240,7 +1481,8 @@ public sealed class SimpleSourceAnalyzer
             {
                 if (assignment.Left is MemberAccessExpressionSyntax memberAccess &&
                     memberAccess.Expression is IdentifierNameSyntax receiver &&
-                    string.Equals(receiver.Identifier.ValueText, objectName, StringComparison.Ordinal) &&
+                    string.Equals(receiver.Identifier.ValueText, objectIdentifier.Identifier.ValueText, StringComparison.Ordinal) &&
+                    IsTargetReference(receiver, targetSymbol) &&
                     string.Equals(memberAccess.Name.Identifier.ValueText, memberName, StringComparison.Ordinal))
                 {
                     values.Add(assignment.Right);
@@ -1266,36 +1508,6 @@ public sealed class SimpleSourceAnalyzer
                 }
             }
         }
-
-        private static IEnumerable<TrackedAssignment> EnumerateLocalAssignments(BlockSyntax body, string name, int beforePosition)
-        {
-            foreach (var declarator in body.DescendantNodes().OfType<VariableDeclaratorSyntax>()
-                         .Where(item => item.SpanStart < beforePosition && item.Identifier.ValueText == name && item.Initializer?.Value is not null)
-                         .OrderBy(item => item.SpanStart))
-            {
-                yield return new TrackedAssignment(declarator.Initializer!.Value, IsConditionalAssignment(body, declarator));
-            }
-
-            foreach (var assignment in body.DescendantNodes().OfType<AssignmentExpressionSyntax>()
-                         .Where(item => item.SpanStart < beforePosition && item.IsKind(SyntaxKind.SimpleAssignmentExpression))
-                         .OrderBy(item => item.SpanStart))
-            {
-                if (assignment.Left is IdentifierNameSyntax identifier &&
-                    string.Equals(identifier.Identifier.ValueText, name, StringComparison.Ordinal))
-                {
-                    yield return new TrackedAssignment(assignment.Right, IsConditionalAssignment(body, assignment));
-                }
-            }
-        }
-
-        private static bool IsConditionalAssignment(BlockSyntax body, SyntaxNode node)
-        {
-            return node.Ancestors()
-                .TakeWhile(ancestor => ancestor != body)
-                .Any(ancestor => ancestor is IfStatementSyntax or ElseClauseSyntax or SwitchStatementSyntax or SwitchExpressionSyntax
-                    or ForStatementSyntax or ForEachStatementSyntax or WhileStatementSyntax or DoStatementSyntax);
-        }
-
         private bool TryEvaluateSymbol(
             ExpressionSyntax expression,
             MethodDeclarationSyntax? scope,
@@ -1516,8 +1728,6 @@ public sealed class SimpleSourceAnalyzer
 
             return next;
         }
-
-        private sealed record TrackedAssignment(ExpressionSyntax Expression, bool IsConditional);
 
         private sealed record StringBuilderCreation(ExpressionSyntax Expression, int Position, IReadOnlyList<ArgumentSyntax> Arguments);
 
