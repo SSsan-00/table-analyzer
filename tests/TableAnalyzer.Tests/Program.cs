@@ -29,6 +29,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
     ("analyzer ignores sql method name on non sql receiver", Tests.AnalyzerIgnoresSqlMethodNameOnNonSqlReceiver),
+    ("analyzer resolves configured sql execution method", Tests.AnalyzerResolvesConfiguredSqlExecutionMethod),
+    ("analyzer resolves configured sql argument index", Tests.AnalyzerResolvesConfiguredSqlArgumentIndex),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
     ("analyzer parses merge source and target with t-sql ast", Tests.AnalyzerParsesMergeSourceAndTargetWithTsqlAst),
     ("analyzer ignores source local execute method", Tests.AnalyzerIgnoresSourceLocalExecuteMethod),
@@ -688,6 +690,69 @@ internal static class Tests
 
         Assert.Equal(0, result.TableUsages.Count);
         Assert.Equal(0, result.SqlSnippets.Count);
+    }
+
+    public static void AnalyzerResolvesConfiguredSqlExecutionMethod()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CustomDbService.cs", """
+            class CustomDbService
+            {
+                void Run(CustomDb db)
+                {
+                    var sql = "SELECT * FROM dbo.Users";
+                    db.ExecDb(sql);
+                }
+            }
+
+            class CustomDb
+            {
+                public void ExecDb(string sql) {}
+            }
+            """);
+        var configuration = new AnalyzerConfiguration
+        {
+            SqlExecutionMethods = new AnalyzerConfiguration().SqlExecutionMethods
+                .Concat([new SqlExecutionMethodSpec("ExecDb", 0, AllowAnyReceiver: true)])
+                .ToArray()
+        };
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CustomDbService.cs")], configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("ExecDb", result.TableUsages[0].SqlExecutionMethod);
+    }
+
+    public static void AnalyzerResolvesConfiguredSqlArgumentIndex()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CustomDbService.cs", """
+            class CustomDbService
+            {
+                void Run(CustomDb db)
+                {
+                    db.ExecDb(connectionName: "main", sql: "DELETE FROM dbo.Sessions WHERE ExpiresAt < @now");
+                }
+            }
+
+            class CustomDb
+            {
+                public void ExecDb(string connectionName, string sql) {}
+            }
+            """);
+        var configuration = new AnalyzerConfiguration
+        {
+            SqlExecutionMethods = new AnalyzerConfiguration().SqlExecutionMethods
+                .Concat([new SqlExecutionMethodSpec("ExecDb", 1, AllowAnyReceiver: true)])
+                .ToArray()
+        };
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CustomDbService.cs")], configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Sessions", result.TableUsages[0].FullName);
+        Assert.Equal("DELETE", result.TableUsages[0].Operation);
     }
 
     public static void AnalyzerReportsInsertSelectTargetAndSource()

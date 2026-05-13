@@ -256,33 +256,49 @@ public sealed class SimpleSourceAnalyzer
         var symbolInfo = model.GetSymbolInfo(invocation);
         var methodSymbol = symbolInfo.Symbol as IMethodSymbol
             ?? symbolInfo.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
-            if (methodSymbol is not null)
+        if (methodSymbol is not null)
+        {
+            var configuredSpec = specs.FirstOrDefault(spec => IsConfiguredTypeMatch(methodSymbol, spec) || spec.AllowAnyReceiver);
+            if (configuredSpec is not null)
             {
-                if (specs.Any(spec => IsConfiguredTypeMatch(methodSymbol, spec)) ||
-                    IsKnownSqlExecutionMethod(methodSymbol))
-                {
+                return configuredSpec;
+            }
+
+            if (IsKnownSqlExecutionMethod(methodSymbol))
+            {
                 return specs[0];
             }
 
-                return null;
-            }
-
-            if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
-            {
-                var receiverType = model.GetTypeInfo(memberAccess.Expression).Type;
-                if (IsResolvedNonDynamicType(receiverType))
-                {
-                    return specs.Any(spec => IsConfiguredReceiverTypeMatch(receiverType, spec)) ||
-                           IsKnownSqlReceiverType(receiverType)
-                        ? specs[0]
-                        : null;
-                }
-            }
-
-            return IsUnqualifiedInvocation(invocation)
-                ? null
-                : specs[0];
+            return null;
         }
+
+        var customSpec = specs.FirstOrDefault(spec => spec.AllowAnyReceiver);
+        if (customSpec is not null)
+        {
+            return customSpec;
+        }
+
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            var receiverType = model.GetTypeInfo(memberAccess.Expression).Type;
+            if (IsResolvedNonDynamicType(receiverType))
+            {
+                var typedSpec = specs.FirstOrDefault(spec => IsConfiguredReceiverTypeMatch(receiverType, spec));
+                if (typedSpec is not null)
+                {
+                    return typedSpec;
+                }
+
+                return IsKnownSqlReceiverType(receiverType)
+                    ? specs[0]
+                    : null;
+            }
+        }
+
+        return IsUnqualifiedInvocation(invocation)
+            ? null
+            : specs[0];
+    }
 
     private static SqlExecutionMethodSpec? ResolveSqlCommandCreation(
         ObjectCreationExpressionSyntax creation,
@@ -308,22 +324,22 @@ public sealed class SimpleSourceAnalyzer
             : null;
     }
 
-        private static bool IsConfiguredTypeMatch(IMethodSymbol method, SqlExecutionMethodSpec spec)
-        {
-            return !string.IsNullOrWhiteSpace(spec.TypeName) &&
-                   IsTypeNameMatch(method.ContainingType, spec.TypeName!);
-        }
+    private static bool IsConfiguredTypeMatch(IMethodSymbol method, SqlExecutionMethodSpec spec)
+    {
+        return !string.IsNullOrWhiteSpace(spec.TypeName) &&
+               IsTypeNameMatch(method.ContainingType, spec.TypeName!);
+    }
 
-        private static bool IsConfiguredReceiverTypeMatch(ITypeSymbol? type, SqlExecutionMethodSpec spec)
-        {
-            return !string.IsNullOrWhiteSpace(spec.TypeName) &&
-                   IsTypeNameMatch(type, spec.TypeName!);
-        }
+    private static bool IsConfiguredReceiverTypeMatch(ITypeSymbol? type, SqlExecutionMethodSpec spec)
+    {
+        return !string.IsNullOrWhiteSpace(spec.TypeName) &&
+               IsTypeNameMatch(type, spec.TypeName!);
+    }
 
-        private static bool IsKnownSqlExecutionMethod(IMethodSymbol method)
-        {
-            var original = method.ReducedFrom ?? method.OriginalDefinition;
-            var containingType = original.ContainingType;
+    private static bool IsKnownSqlExecutionMethod(IMethodSymbol method)
+    {
+        var original = method.ReducedFrom ?? method.OriginalDefinition;
+        var containingType = original.ContainingType;
         if (containingType is null)
         {
             return false;
@@ -333,42 +349,42 @@ public sealed class SimpleSourceAnalyzer
         return typeName is "Dapper.SqlMapper" ||
                typeName is "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions" ||
                typeName is "Microsoft.EntityFrameworkCore.RelationalQueryableExtensions";
+    }
+
+    private static bool IsKnownSqlReceiverType(ITypeSymbol? type)
+    {
+        if (type is null)
+        {
+            return false;
         }
 
-        private static bool IsKnownSqlReceiverType(ITypeSymbol? type)
-        {
-            if (type is null)
-            {
-                return false;
-            }
+        var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+        return typeName is "System.Data.IDbConnection" ||
+               typeName is "System.Data.Common.DbConnection" ||
+               typeName is "System.Data.SqlClient.SqlConnection" ||
+               typeName is "Microsoft.Data.SqlClient.SqlConnection" ||
+               typeName is "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade" ||
+               typeName is "Microsoft.EntityFrameworkCore.DbSet" ||
+               typeName.StartsWith("Microsoft.EntityFrameworkCore.DbSet<", StringComparison.Ordinal);
+    }
 
-            var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
-            return typeName is "System.Data.IDbConnection" ||
-                   typeName is "System.Data.Common.DbConnection" ||
-                   typeName is "System.Data.SqlClient.SqlConnection" ||
-                   typeName is "Microsoft.Data.SqlClient.SqlConnection" ||
-                   typeName is "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade" ||
-                   typeName is "Microsoft.EntityFrameworkCore.DbSet" ||
-                   typeName.StartsWith("Microsoft.EntityFrameworkCore.DbSet<", StringComparison.Ordinal);
-        }
+    private static bool IsKnownSqlCommandType(ITypeSymbol type)
+    {
+        var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+        return typeName is "System.Data.SqlClient.SqlCommand" or "Microsoft.Data.SqlClient.SqlCommand";
+    }
 
-        private static bool IsKnownSqlCommandType(ITypeSymbol type)
-        {
-            var typeName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
-            return typeName is "System.Data.SqlClient.SqlCommand" or "Microsoft.Data.SqlClient.SqlCommand";
-        }
+    private static bool IsResolvedNonDynamicType(ITypeSymbol? type)
+    {
+        return type is not null &&
+               type.TypeKind is not TypeKind.Error and not TypeKind.Dynamic;
+    }
 
-        private static bool IsResolvedNonDynamicType(ITypeSymbol? type)
+    private static bool IsTypeNameMatch(ITypeSymbol? type, string expectedTypeName)
+    {
+        if (type is null)
         {
-            return type is not null &&
-                   type.TypeKind is not TypeKind.Error and not TypeKind.Dynamic;
-        }
-
-        private static bool IsTypeNameMatch(ITypeSymbol? type, string expectedTypeName)
-        {
-            if (type is null)
-            {
-                return false;
+            return false;
         }
 
         var displayName = type.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);

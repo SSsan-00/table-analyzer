@@ -52,8 +52,21 @@ dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 - 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
 - 出力先フォルダ: レポートの出力先
 - 出力形式: `csv` または `xlsx`
+- 追加SQL実行メソッド: 任意。独自DBラッパーのSQL実行メソッドを1行1件で指定
 
 各パスは `選択` ボタンでフォルダ/ファイル選択できます。各入力欄の `クリア` ボタンで空に戻せます。テキストボックスへのドラッグ&ドロップにも対応しています。
+
+追加SQL実行メソッドは、次の形式で指定します。
+
+```text
+ExecDb
+ExecDb:0
+RunSql:1
+```
+
+`ExecDb` は `ExecDb:0` と同じ意味です。コロン後の数値は、SQL文字列が入る引数位置を0始まりで指定します。例えば `RunSql(connectionName, sql)` のように2番目の引数がSQLなら `RunSql:1` です。
+
+指定したメソッドは受信オブジェクトの型を問わずSQL実行候補として扱います。`db.ExecDb(sql)`、`SqlHelper.ExecDb(sql)`、同一クラス内の `ExecDb(sql)` のような独自ラッパーを対象にできます。登録対象は、SQL本文またはSQLを組み立てた変数を直接受け取って実行するメソッドに絞ってください。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 
