@@ -1,4 +1,5 @@
 using System.Text;
+using System.IO.Compression;
 using TableAnalyzer.Core;
 
 var tests = new (string Name, Action Body)[]
@@ -42,6 +43,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
     ("runner writes xlsx only when requested", Tests.RunnerWritesXlsxOnlyWhenRequested),
+    ("xlsx table usages includes sql text", Tests.XlsxTableUsagesIncludesSqlText),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -1134,6 +1136,46 @@ internal static class Tests
         }
     }
 
+    public static void XlsxTableUsagesIncludesSqlText()
+    {
+        using var temp = TempWorkspace.Create();
+        temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    db.Query("SELECT * FROM dbo.Users");
+                }
+            }
+            """);
+        var output = Path.Combine(Path.GetTempPath(), "table-analyzer-output-tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var run = new AnalysisRunner().Run(
+                new AnalysisRunRequest(temp.Root, temp.Root, null, output, ReportOutputFormat.Xlsx),
+                new AnalyzerConfiguration(),
+                new DateTime(2026, 5, 12, 9, 0, 0));
+
+            var xlsxPath = Path.Combine(run.ReportDirectory, "table-analysis.xlsx");
+            using var archive = ZipFile.OpenRead(xlsxPath);
+            var sheet = archive.GetEntry("xl/worksheets/sheet1.xml") ?? throw new Exception("table-usages worksheet was not found.");
+            using var stream = sheet.Open();
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var xml = reader.ReadToEnd();
+
+            Assert.Contains(xml, "SqlText");
+            Assert.Contains(xml, "SELECT * FROM dbo.Users");
+        }
+        finally
+        {
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+        }
+    }
+
     public static void CsvWriterWritesAllExpectedFilesWithBom()
     {
         using var temp = TempWorkspace.Create();
@@ -1162,6 +1204,10 @@ internal static class Tests
         Assert.Equal(0xEF, bytes[0]);
         Assert.Equal(0xBB, bytes[1]);
         Assert.Equal(0xBF, bytes[2]);
+
+        var lines = File.ReadAllLines(Path.Combine(temp.Root, "table-usages.csv"), Encoding.UTF8);
+        Assert.True(lines[0].EndsWith(",SqlText", StringComparison.Ordinal), lines[0]);
+        Assert.True(lines[1].EndsWith(",SELECT * FROM dbo.Users", StringComparison.Ordinal), lines[1]);
     }
 
     private static AnalyzerConfiguration ConfigurationWithAutoMethod(string methodName)

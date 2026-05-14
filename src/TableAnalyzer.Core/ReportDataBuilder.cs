@@ -11,6 +11,9 @@ internal static class ReportDataBuilder
         var summaries = result.TableSummaries.Count > 0
             ? result.TableSummaries
             : BuildSummaries(result.TableUsages);
+        var sqlTextById = result.SqlSnippets
+            .GroupBy(row => row.SqlId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().SqlText, StringComparer.Ordinal);
 
         var tables = new List<ReportTable>
         {
@@ -18,13 +21,13 @@ internal static class ReportDataBuilder
             [
                 "UsageId", "SqlId", "ObjectType", "ObjectName", "FullName", "Operation", "SqlRole", "Confidence",
                 "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "CallChain", "CallDepth",
-                "DynamicPattern", "CandidateGroupId", "Notes"
+                "DynamicPattern", "CandidateGroupId", "Notes", "SqlText"
             ], result.TableUsages.Select(row => (IReadOnlyList<string>)
             [
                 row.UsageId, row.SqlId, row.ObjectType, row.ObjectName, row.FullName, row.Operation, row.SqlRole,
                 row.Confidence, row.SourceFile, row.Line.ToString(), row.Column.ToString(), row.ContainingSymbol,
                 row.SqlExecutionMethod, row.CallChain, row.CallDepth.ToString(), row.DynamicPattern,
-                row.CandidateGroupId, row.Notes
+                row.CandidateGroupId, row.Notes, sqlTextById.GetValueOrDefault(row.SqlId, "")
             ]).ToArray()),
 
             new("table-summary",

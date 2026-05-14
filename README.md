@@ -171,7 +171,7 @@ C:\work\table-analysis\20260512-143012_Pages\
 CSV形式を選んだ場合:
 
 ```text
-table-usages.csv      SQL内のテーブル/ビュー/Procedure出現ごとの詳細
+table-usages.csv      SQL内のテーブル/ビュー/Procedure出現ごとの詳細。最後尾にSQL全文を出力
 table-summary.csv     FullName単位の集計
 dynamic-sql.csv       動的SQLや候補展開の詳細
 unresolved-sql.csv    SQL文字列やテーブル名を解決できなかった箇所
