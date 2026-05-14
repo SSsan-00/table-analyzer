@@ -31,6 +31,11 @@ var tests = new (string Name, Action Body)[]
     ("analyzer ignores sql method name on non sql receiver", Tests.AnalyzerIgnoresSqlMethodNameOnNonSqlReceiver),
     ("analyzer resolves configured sql execution method", Tests.AnalyzerResolvesConfiguredSqlExecutionMethod),
     ("analyzer resolves configured sql argument index", Tests.AnalyzerResolvesConfiguredSqlArgumentIndex),
+    ("analyzer auto detects configured sql argument", Tests.AnalyzerAutoDetectsConfiguredSqlArgument),
+    ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
+    ("analyzer resolves caller argument into context sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoContextSqlWrapper),
+    ("analyzer resolves multiple caller argument candidates", Tests.AnalyzerResolvesMultipleCallerArgumentCandidates),
+    ("analyzer reports dynamic caller argument candidate", Tests.AnalyzerReportsDynamicCallerArgumentCandidate),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
     ("analyzer parses merge source and target with t-sql ast", Tests.AnalyzerParsesMergeSourceAndTargetWithTsqlAst),
     ("analyzer ignores source local execute method", Tests.AnalyzerIgnoresSourceLocalExecuteMethod),
@@ -755,6 +760,165 @@ internal static class Tests
         Assert.Equal("DELETE", result.TableUsages[0].Operation);
     }
 
+    public static void AnalyzerAutoDetectsConfiguredSqlArgument()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CustomDbService.cs", """
+            class CustomDbService
+            {
+                void Run(CustomDb db)
+                {
+                    db.ExecDb("main", "DELETE FROM dbo.Sessions WHERE ExpiresAt < @now");
+                }
+            }
+
+            class CustomDb
+            {
+                public void ExecDb(string connectionName, string sql) {}
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CustomDbService.cs")], configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Single(result.SqlSnippets);
+        Assert.Equal("dbo.Sessions", result.TableUsages[0].FullName);
+        Assert.Equal("DELETE", result.TableUsages[0].Operation);
+    }
+
+    public static void AnalyzerResolvesCallerArgumentIntoSqlWrapper()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Pages/Users.cshtml.cs", """
+            class UsersModel
+            {
+                void OnGet()
+                {
+                    SearchUsers("Users");
+                }
+
+                void SearchUsers(string table)
+                {
+                    var sql = "SELECT * FROM dbo." + table;
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Pages/Users.cshtml.cs")], configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("certain", result.TableUsages[0].Confidence);
+    }
+
+    public static void AnalyzerResolvesCallerArgumentIntoContextSqlWrapper()
+    {
+        using var temp = TempWorkspace.Create();
+        var page = temp.Write("Pages/Users.cshtml.cs", """
+            class UsersModel
+            {
+                void OnGet()
+                {
+                    new UserRepository().SearchUsers("Users");
+                }
+            }
+            """);
+        var repository = temp.Write("Infrastructure/UserRepository.cs", """
+            class UserRepository
+            {
+                public void SearchUsers(string table)
+                {
+                    var sql = "SELECT * FROM dbo." + table;
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+        var otherPage = temp.Write("Pages/Other.cshtml.cs", """
+            class OtherModel
+            {
+                void OnGet()
+                {
+                    new UserRepository().SearchUsers("OtherUsers");
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze(
+            [new SourceFile(page, "Pages/Users.cshtml.cs")],
+            [
+                new SourceFile(page, "Pages/Users.cshtml.cs"),
+                new SourceFile(repository, "Infrastructure/UserRepository.cs"),
+                new SourceFile(otherPage, "Pages/Other.cshtml.cs")
+            ],
+            configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.DoesNotContain(result.TableUsages.Select(row => row.FullName), "dbo.OtherUsers");
+        Assert.Equal("Infrastructure/UserRepository.cs", result.TableUsages[0].SourceFile);
+    }
+
+    public static void AnalyzerResolvesMultipleCallerArgumentCandidates()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Pages/Users.cshtml.cs", """
+            class UsersModel
+            {
+                void OnGet(bool archive)
+                {
+                    SearchUsers(archive ? "UserArchive" : "Users");
+                }
+
+                void SearchUsers(string table)
+                {
+                    var sql = "SELECT * FROM dbo." + table;
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Pages/Users.cshtml.cs")], configuration);
+        var names = result.TableUsages.Select(row => row.FullName).ToArray();
+
+        Assert.Equal(2, result.TableUsages.Count);
+        Assert.Contains(names, "dbo.Users");
+        Assert.Contains(names, "dbo.UserArchive");
+        Assert.All(result.TableUsages, row => Assert.Equal("probable", row.Confidence));
+    }
+
+    public static void AnalyzerReportsDynamicCallerArgumentCandidate()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Pages/Users.cshtml.cs", """
+            class UsersModel
+            {
+                void OnGet(string table)
+                {
+                    SearchUsers(table);
+                }
+
+                void SearchUsers(string table)
+                {
+                    var sql = "SELECT * FROM dbo." + table;
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Pages/Users.cshtml.cs")], configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.{table}", result.TableUsages[0].FullName);
+        Assert.Equal("Unknown", result.TableUsages[0].ObjectType);
+        Assert.Equal("dynamic", result.TableUsages[0].Confidence);
+    }
+
     public static void AnalyzerReportsInsertSelectTargetAndSource()
     {
         using var temp = TempWorkspace.Create();
@@ -998,6 +1162,16 @@ internal static class Tests
         Assert.Equal(0xEF, bytes[0]);
         Assert.Equal(0xBB, bytes[1]);
         Assert.Equal(0xBF, bytes[2]);
+    }
+
+    private static AnalyzerConfiguration ConfigurationWithAutoMethod(string methodName)
+    {
+        return new AnalyzerConfiguration
+        {
+            SqlExecutionMethods = new AnalyzerConfiguration().SqlExecutionMethods
+                .Concat([new SqlExecutionMethodSpec(methodName, 0, AllowAnyReceiver: true, AutoDetectSqlArgument: true)])
+                .ToArray()
+        };
     }
 }
 

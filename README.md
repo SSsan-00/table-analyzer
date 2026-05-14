@@ -18,6 +18,8 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - 解析対象外のプロジェクト内ファイルにある helper メソッドの戻り値をリンクして解析
 - `using` / namespace / overload を考慮して helper メソッド呼び出しを優先解決
 - SQL実行メソッドの引数からSQL文字列を追跡
+- GUIで追加した独自メソッドは引数位置指定なしでSQL候補を自動判定
+- SQL実行メソッドを内部で呼ぶメソッドは、呼び出し元の実引数を仮引数へ流して再評価
 - SQL実行メソッド検出では、SemanticModelで解決できる非SQLの通常メソッド呼び出しを除外
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
 - `StringBuilder` の初期値、`Append`、`AppendLine`、`AppendFormat`、`ToString()` を解析
@@ -52,21 +54,23 @@ dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 - 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
 - 出力先フォルダ: レポートの出力先
 - 出力形式: `csv` または `xlsx`
-- 追加SQL実行メソッド: 任意。独自DBラッパーのSQL実行メソッドを1行1件で指定
+- 解析対象メソッド: 任意。独自DBラッパーのメソッド名を1行1件で指定
 
 各パスは `選択` ボタンでフォルダ/ファイル選択できます。各入力欄の `クリア` ボタンで空に戻せます。テキストボックスへのドラッグ&ドロップにも対応しています。
 
-追加SQL実行メソッドは、次の形式で指定します。
+解析対象メソッドは、メソッド名のみを次の形式で指定します。
 
 ```text
 ExecDb
-ExecDb:0
-RunSql:1
+RunSql
+SearchUsers
 ```
 
-`ExecDb` は `ExecDb:0` と同じ意味です。コロン後の数値は、SQL文字列が入る引数位置を0始まりで指定します。例えば `RunSql(connectionName, sql)` のように2番目の引数がSQLなら `RunSql:1` です。
+引数位置の指定は不要です。ツール側で全引数を評価し、T-SQLとしてテーブルを抽出できる引数をSQL候補として採用します。
 
-指定したメソッドは受信オブジェクトの型を問わずSQL実行候補として扱います。`db.ExecDb(sql)`、`SqlHelper.ExecDb(sql)`、同一クラス内の `ExecDb(sql)` のような独自ラッパーを対象にできます。登録対象は、SQL本文またはSQLを組み立てた変数を直接受け取って実行するメソッドに絞ってください。
+指定したメソッドは受信オブジェクトの型を問わずSQL実行候補として扱います。`db.ExecDb(sql)`、`SqlHelper.ExecDb(sql)`、同一クラス内の `ExecDb(sql)` のような独自ラッパーを対象にできます。指定メソッドを内部で呼ぶメソッドについては、呼び出し元の実引数を仮引数に流して再評価します。
+
+例えば `SearchUsers("Users")` が `SearchUsers(string table)` 内で `db.ExecDb("SELECT * FROM dbo." + table)` を呼ぶ場合、`table = "Users"` として解析し、`dbo.Users` を出力します。候補が複数ある場合は複数行、実行時値が残る場合は `{table}` のような動的候補として出力します。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 

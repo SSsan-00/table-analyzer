@@ -30,6 +30,9 @@ public sealed class SimpleSourceAnalyzer
         var parsedFiles = ReadAndParseFiles(MergeFiles(files, contextFiles), reader, result, ids, progress);
         var semanticContext = SemanticAnalysisContext.Create(parsedFiles.Values.Select(file => file.Root.SyntaxTree));
         var methods = BuildMethodIndex(parsedFiles.Values, semanticContext);
+        var evaluator = new ExpressionEvaluator(methods, semanticContext, configuration);
+        var callContexts = new MethodCallContextResolver(parsedFiles.Values, methods, evaluator);
+        var sourceFilesByTree = parsedFiles.Values.ToDictionary(file => file.Root.SyntaxTree, file => file.SourceFile);
         var completed = 0;
 
         progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, ""));
@@ -42,7 +45,7 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            AnalyzeFile(file, parsed.Root, methods, semanticContext, configuration, result, ids);
+            AnalyzeFile(file, parsed.Root, methods, semanticContext, configuration, evaluator, callContexts, sourceFilesByTree, result, ids);
             completed++;
             progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
         }
@@ -82,7 +85,7 @@ public sealed class SimpleSourceAnalyzer
             try
             {
                 var tree = CSharpSyntaxTree.ParseText(read.Text, path: fullPath);
-                parsedFiles[fullPath] = new ParsedSourceFile(tree.GetCompilationUnitRoot());
+                parsedFiles[fullPath] = new ParsedSourceFile(file, tree.GetCompilationUnitRoot());
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
             {
@@ -125,56 +128,76 @@ public sealed class SimpleSourceAnalyzer
         MethodIndex methods,
         SemanticAnalysisContext semanticContext,
         AnalyzerConfiguration configuration,
+        ExpressionEvaluator evaluator,
+        MethodCallContextResolver callContexts,
+        IReadOnlyDictionary<SyntaxTree, SourceFile> sourceFilesByTree,
         AnalysisResult result,
         IdSequence ids)
     {
-        var evaluator = new ExpressionEvaluator(methods, semanticContext, configuration);
-        foreach (var invocation in FindSqlInvocations(root, configuration, semanticContext).OrderBy(invocation => invocation.Syntax.SpanStart))
+        var reachable = FindReachableSqlInvocations(root, file, methods, configuration, semanticContext, sourceFilesByTree);
+        foreach (var invocation in reachable.Invocations
+                     .OrderBy(invocation => invocation.SourceFile.RelativePath, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(invocation => invocation.Syntax.SpanStart))
         {
             var sqlId = ids.NextSqlId();
             var location = GetLocation(invocation.Syntax);
             var containingMethod = invocation.Syntax.FirstAncestorOrSelf<MethodDeclarationSyntax>();
             var containingSymbol = GetContainingSymbol(containingMethod);
-            var evaluated = evaluator.Evaluate(invocation.SqlExpression, containingMethod);
+            var sourceFile = invocation.SourceFile;
+            var parameterContexts = containingMethod is null
+                ? [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)]
+                : callContexts.GetParameterContexts(containingMethod, reachable.Methods);
+            var evaluated = evaluator.Evaluate(invocation.SqlExpression, containingMethod, parameterContexts);
 
             if (evaluated.Candidates.Count == 0)
             {
+                if (invocation.AutoDetectSqlArgument)
+                {
+                    continue;
+                }
+
                 var pattern = string.IsNullOrEmpty(evaluated.Pattern) ? $"{{{invocation.SqlExpression}}}" : evaluated.Pattern;
-                result.UnresolvedSql.Add(new UnresolvedSqlRow(sqlId, file.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "RuntimeValue", invocation.SqlExpression.ToString(), containingSymbol, evaluated.Notes));
-                result.SqlSnippets.Add(new SqlSnippetRow(sqlId, file.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "unknown", pattern, NormalizeSql(pattern), containingSymbol, evaluated.Notes));
+                result.UnresolvedSql.Add(new UnresolvedSqlRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "RuntimeValue", invocation.SqlExpression.ToString(), containingSymbol, evaluated.Notes));
+                result.SqlSnippets.Add(new SqlSnippetRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "unknown", pattern, NormalizeSql(pattern), containingSymbol, evaluated.Notes));
                 continue;
             }
 
+            var candidates = BuildSqlCandidates(evaluated, invocation.AutoDetectSqlArgument);
+            if (candidates.Count == 0)
+            {
+                continue;
+            }
+
+            var confidence = DetermineConfidence(candidates.Select(candidate => candidate.Sql).ToArray(), evaluated.Confidence);
             string candidateGroupId = "";
-            if (evaluated.Candidates.Count > 1 || evaluated.Confidence is "dynamic" or "unknown")
+            if (candidates.Count > 1 || confidence is "dynamic" or "unknown")
             {
                 candidateGroupId = ids.NextCandidateGroupId();
                 result.DynamicSql.Add(new DynamicSqlRow(
                     candidateGroupId,
-                    file.RelativePath,
+                    sourceFile.RelativePath,
                     location.Line,
                     containingSymbol,
                     evaluated.Pattern,
-                    evaluated.Candidates.Count,
-                    string.Join("|", evaluated.Candidates),
-                    evaluated.Confidence,
+                    candidates.Count,
+                    string.Join("|", candidates.Select(candidate => candidate.Sql)),
+                    confidence,
                     evaluated.ResolutionPath,
                     evaluated.Notes));
             }
 
-            foreach (var candidate in evaluated.Candidates)
+            foreach (var candidate in candidates)
             {
-                var currentSqlId = evaluated.Candidates.Count == 1 ? sqlId : ids.NextSqlId();
-                result.SqlSnippets.Add(new SqlSnippetRow(currentSqlId, file.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, evaluated.Confidence, candidate, NormalizeSql(candidate), containingSymbol, evaluated.Notes));
+                var currentSqlId = candidates.Count == 1 ? sqlId : ids.NextSqlId();
+                result.SqlSnippets.Add(new SqlSnippetRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, confidence, candidate.Sql, NormalizeSql(candidate.Sql), containingSymbol, evaluated.Notes));
 
-                var objects = SqlObjectExtractor.Extract(candidate);
-                if (objects.Count == 0)
+                if (candidate.Objects.Count == 0)
                 {
-                    result.UnresolvedSql.Add(new UnresolvedSqlRow(currentSqlId, file.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "NoSqlObjectsFound", invocation.SqlExpression.ToString(), containingSymbol, ""));
+                    result.UnresolvedSql.Add(new UnresolvedSqlRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "NoSqlObjectsFound", invocation.SqlExpression.ToString(), containingSymbol, ""));
                     continue;
                 }
 
-                foreach (var sqlObject in objects)
+                foreach (var sqlObject in candidate.Objects)
                 {
                     result.TableUsages.Add(new TableUsageRow(
                         ids.NextUsageId(),
@@ -184,8 +207,8 @@ public sealed class SimpleSourceAnalyzer
                         sqlObject.FullName,
                         sqlObject.Operation,
                         sqlObject.SqlRole,
-                        evaluated.Confidence,
-                        file.RelativePath,
+                        confidence,
+                        sourceFile.RelativePath,
                         location.Line,
                         location.Column,
                         containingSymbol,
@@ -200,8 +223,119 @@ public sealed class SimpleSourceAnalyzer
         }
     }
 
-    private static IReadOnlyList<SqlInvocation> FindSqlInvocations(
+    private static ReachableSqlInvocations FindReachableSqlInvocations(
         CompilationUnitSyntax root,
+        SourceFile rootSourceFile,
+        MethodIndex methods,
+        AnalyzerConfiguration configuration,
+        SemanticAnalysisContext semanticContext,
+        IReadOnlyDictionary<SyntaxTree, SourceFile> sourceFilesByTree)
+    {
+        var invocations = new List<SqlInvocation>();
+        var seenMethods = new HashSet<MethodDeclarationSyntax>();
+        var seenInvocations = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            VisitMethod(method);
+        }
+
+        return new ReachableSqlInvocations(invocations, seenMethods);
+
+        void VisitMethod(MethodDeclarationSyntax method)
+        {
+            if (!seenMethods.Add(method))
+            {
+                return;
+            }
+
+            var sourceFile = sourceFilesByTree.TryGetValue(method.SyntaxTree, out var found)
+                ? found
+                : rootSourceFile;
+
+            foreach (var sqlInvocation in FindSqlInvocations(method, sourceFile, configuration, semanticContext))
+            {
+                if (seenInvocations.Add(CreateSqlInvocationKey(sqlInvocation)))
+                {
+                    invocations.Add(sqlInvocation);
+                }
+            }
+
+            foreach (var invocation in method.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                foreach (var target in methods.ResolveInvocationCandidates(invocation))
+                {
+                    VisitMethod(target);
+                }
+            }
+        }
+    }
+
+    private static string CreateSqlInvocationKey(SqlInvocation invocation)
+    {
+        return $"{invocation.Syntax.SyntaxTree.FilePath}:{invocation.Syntax.SpanStart}:{invocation.SqlExpression.SpanStart}";
+    }
+
+    private static IReadOnlyList<SqlCandidate> BuildSqlCandidates(SymbolicValue evaluated, bool onlySqlObjects)
+    {
+        var candidates = new List<SqlCandidate>();
+        foreach (var candidate in evaluated.Candidates)
+        {
+            if (onlySqlObjects && !LooksLikeSqlStatement(candidate))
+            {
+                continue;
+            }
+
+            var objects = SqlObjectExtractor.Extract(candidate);
+            if (objects.Count == 0 && onlySqlObjects)
+            {
+                continue;
+            }
+
+            candidates.Add(new SqlCandidate(candidate, objects));
+        }
+
+        return candidates;
+    }
+
+    private static bool LooksLikeSqlStatement(string sql)
+    {
+        var normalized = NormalizeSql(sql).TrimStart('(', ' ');
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var firstToken = normalized.Split([' ', '\t', '\r', '\n'], 2, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault() ?? "";
+        return firstToken.Equals("SELECT", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("INSERT", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("UPDATE", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("DELETE", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("MERGE", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("EXEC", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("EXECUTE", StringComparison.OrdinalIgnoreCase) ||
+               firstToken.Equals("WITH", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string DetermineConfidence(IReadOnlyList<string> candidates, string fallback)
+    {
+        if (candidates.Count == 0)
+        {
+            return fallback;
+        }
+
+        if (candidates.Any(candidate => candidate.Contains('{', StringComparison.Ordinal) && candidate.Contains('}', StringComparison.Ordinal)))
+        {
+            return "dynamic";
+        }
+
+        return candidates.Count == 1 ? "certain" : "probable";
+    }
+
+    private static IReadOnlyList<SqlInvocation> FindSqlInvocations(
+        SyntaxNode root,
+        SourceFile sourceFile,
         AnalyzerConfiguration configuration,
         SemanticAnalysisContext semanticContext)
     {
@@ -221,7 +355,14 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            invocations.Add(new SqlInvocation(methodName, invocation.ArgumentList.Arguments[spec.SqlArgumentIndex].Expression, invocation));
+            if (spec.AutoDetectSqlArgument)
+            {
+                invocations.AddRange(invocation.ArgumentList.Arguments
+                    .Select(argument => new SqlInvocation(methodName, argument.Expression, invocation, sourceFile, AutoDetectSqlArgument: true)));
+                continue;
+            }
+
+            invocations.Add(new SqlInvocation(methodName, invocation.ArgumentList.Arguments[spec.SqlArgumentIndex].Expression, invocation, sourceFile, AutoDetectSqlArgument: false));
         }
 
         foreach (var creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
@@ -233,7 +374,7 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            invocations.Add(new SqlInvocation(typeName, creation.ArgumentList.Arguments[spec.SqlArgumentIndex].Expression, creation));
+            invocations.Add(new SqlInvocation(typeName, creation.ArgumentList.Arguments[spec.SqlArgumentIndex].Expression, creation, sourceFile, AutoDetectSqlArgument: false));
         }
 
         return invocations;
@@ -445,11 +586,17 @@ public sealed class SimpleSourceAnalyzer
         return Regex.Replace(sql, @"\s+", " ").Trim();
     }
 
-    private sealed record SqlInvocation(string MethodName, ExpressionSyntax SqlExpression, SyntaxNode Syntax);
+    private sealed record SqlCandidate(string Sql, IReadOnlyList<SqlObject> Objects);
+
+    private sealed record SqlInvocation(string MethodName, ExpressionSyntax SqlExpression, SyntaxNode Syntax, SourceFile SourceFile, bool AutoDetectSqlArgument);
+
+    private sealed record ReachableSqlInvocations(
+        IReadOnlyList<SqlInvocation> Invocations,
+        IReadOnlySet<MethodDeclarationSyntax> Methods);
 
     private sealed record SourceLocation(int Line, int Column);
 
-    private sealed record ParsedSourceFile(CompilationUnitSyntax Root);
+    private sealed record ParsedSourceFile(SourceFile SourceFile, CompilationUnitSyntax Root);
 
     private sealed class SemanticAnalysisContext
     {
@@ -634,6 +781,170 @@ public sealed class SimpleSourceAnalyzer
         }
     }
 
+    private sealed class MethodCallContextResolver
+    {
+        private readonly MethodIndex _methods;
+        private readonly ExpressionEvaluator _evaluator;
+        private readonly Dictionary<MethodDeclarationSyntax, IReadOnlyList<InvocationExpressionSyntax>> _callers = new();
+        private readonly Dictionary<MethodDeclarationSyntax, IReadOnlyList<IReadOnlyDictionary<string, SymbolicValue>>> _cache = new();
+
+        public MethodCallContextResolver(
+            IEnumerable<ParsedSourceFile> parsedFiles,
+            MethodIndex methods,
+            ExpressionEvaluator evaluator)
+        {
+            _methods = methods;
+            _evaluator = evaluator;
+            BuildCallerIndex(parsedFiles);
+        }
+
+        public IReadOnlyList<IReadOnlyDictionary<string, SymbolicValue>> GetParameterContexts(
+            MethodDeclarationSyntax method,
+            IReadOnlySet<MethodDeclarationSyntax>? allowedMethods = null)
+        {
+            var contexts = ResolveParameterContexts(method, new HashSet<string>(StringComparer.Ordinal), allowedMethods);
+            return contexts.Count == 0
+                ? [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)]
+                : contexts;
+        }
+
+        private void BuildCallerIndex(IEnumerable<ParsedSourceFile> parsedFiles)
+        {
+            foreach (var invocation in parsedFiles.SelectMany(file => file.Root.DescendantNodes().OfType<InvocationExpressionSyntax>()))
+            {
+                foreach (var target in _methods.ResolveInvocationCandidates(invocation))
+                {
+                    if (!_callers.TryGetValue(target, out var existing))
+                    {
+                        _callers[target] = [invocation];
+                        continue;
+                    }
+
+                    _callers[target] = existing.Concat([invocation]).ToArray();
+                }
+            }
+        }
+
+        private IReadOnlyList<IReadOnlyDictionary<string, SymbolicValue>> ResolveParameterContexts(
+            MethodDeclarationSyntax method,
+            HashSet<string> activeMethods,
+            IReadOnlySet<MethodDeclarationSyntax>? allowedMethods)
+        {
+            if (allowedMethods is null && _cache.TryGetValue(method, out var cached))
+            {
+                return cached;
+            }
+
+            var signature = _methods.GetSignature(method);
+            if (!activeMethods.Add(signature))
+            {
+                return [];
+            }
+
+            var contexts = new List<IReadOnlyDictionary<string, SymbolicValue>>();
+            if (_callers.TryGetValue(method, out var callers))
+            {
+                foreach (var invocation in callers)
+                {
+                    var callerMethod = invocation.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+                    if (ReferenceEquals(callerMethod, method))
+                    {
+                        continue;
+                    }
+
+                    var callerContexts = callerMethod is null
+                        ? [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)]
+                        : allowedMethods is not null && !allowedMethods.Contains(callerMethod)
+                            ? []
+                            : ResolveParameterContexts(callerMethod, activeMethods, allowedMethods);
+                    if (callerContexts.Count == 0)
+                    {
+                        if (allowedMethods is not null && callerMethod is not null && !allowedMethods.Contains(callerMethod))
+                        {
+                            continue;
+                        }
+
+                        callerContexts = [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)];
+                    }
+
+                    foreach (var callerContext in callerContexts)
+                    {
+                        contexts.Add(CreateParameterContext(method, invocation, callerMethod, callerContext));
+                    }
+                }
+            }
+
+            activeMethods.Remove(signature);
+            var distinct = DistinctParameterContexts(contexts);
+            if (allowedMethods is null)
+            {
+                _cache[method] = distinct;
+            }
+
+            return distinct;
+        }
+
+        private IReadOnlyDictionary<string, SymbolicValue> CreateParameterContext(
+            MethodDeclarationSyntax target,
+            InvocationExpressionSyntax invocation,
+            MethodDeclarationSyntax? callerMethod,
+            IReadOnlyDictionary<string, SymbolicValue> callerContext)
+        {
+            var mapped = new Dictionary<string, SymbolicValue>(StringComparer.Ordinal);
+            var parameters = target.ParameterList.Parameters;
+            var parameterByName = parameters.ToDictionary(parameter => parameter.Identifier.ValueText, StringComparer.Ordinal);
+            var positionalIndex = 0;
+
+            foreach (var argument in invocation.ArgumentList.Arguments)
+            {
+                ParameterSyntax? parameter = null;
+                if (argument.NameColon is not null)
+                {
+                    parameterByName.TryGetValue(argument.NameColon.Name.Identifier.ValueText, out parameter);
+                }
+                else if (positionalIndex < parameters.Count)
+                {
+                    parameter = parameters[positionalIndex];
+                    positionalIndex++;
+                }
+
+                if (parameter is null)
+                {
+                    continue;
+                }
+
+                mapped[parameter.Identifier.ValueText] = _evaluator.Evaluate(argument.Expression, callerMethod, callerContext);
+            }
+
+            foreach (var parameter in parameters)
+            {
+                var parameterName = parameter.Identifier.ValueText;
+                if (!mapped.ContainsKey(parameterName) && parameter.Default?.Value is not null)
+                {
+                    mapped[parameterName] = _evaluator.Evaluate(parameter.Default.Value, target, new Dictionary<string, SymbolicValue>(StringComparer.Ordinal));
+                }
+            }
+
+            return mapped;
+        }
+
+        private static IReadOnlyList<IReadOnlyDictionary<string, SymbolicValue>> DistinctParameterContexts(
+            IEnumerable<IReadOnlyDictionary<string, SymbolicValue>> contexts)
+        {
+            return contexts
+                .GroupBy(CreateContextKey, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .ToArray();
+        }
+
+        private static string CreateContextKey(IReadOnlyDictionary<string, SymbolicValue> context)
+        {
+            return string.Join(";", context
+                .OrderBy(item => item.Key, StringComparer.Ordinal)
+                .Select(item => $"{item.Key}={string.Join("|", item.Value.Candidates)}:{item.Value.Pattern}"));
+        }
+    }
+
     private sealed class IdSequence
     {
         private int _usage;
@@ -660,6 +971,32 @@ public sealed class SimpleSourceAnalyzer
         public SymbolicValue Evaluate(ExpressionSyntax expression, MethodDeclarationSyntax? scope)
         {
             return Evaluate(expression, scope, new Dictionary<string, SymbolicValue>(StringComparer.Ordinal), 0, new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        public SymbolicValue Evaluate(
+            ExpressionSyntax expression,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters)
+        {
+            return Evaluate(expression, scope, parameters, 0, new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        public SymbolicValue Evaluate(
+            ExpressionSyntax expression,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyList<IReadOnlyDictionary<string, SymbolicValue>> parameterContexts)
+        {
+            if (parameterContexts.Count == 0)
+            {
+                return Evaluate(expression, scope);
+            }
+
+            var values = parameterContexts
+                .Select(parameters => Evaluate(expression, scope, parameters, 0, new HashSet<string>(StringComparer.Ordinal)))
+                .ToArray();
+            return values.Length == 1
+                ? values[0]
+                : CombineAlternatives(values, "call contexts");
         }
 
         private SymbolicValue Evaluate(
@@ -1693,10 +2030,12 @@ public sealed class SimpleSourceAnalyzer
                 return new SymbolicValue(distinct.Take(configuration.MaxCandidatesPerExpression).ToArray(), pattern, "dynamic", path, "candidate limit exceeded");
             }
 
+            var hasDynamicCandidate = distinct.Any(candidate => candidate.Contains('{', StringComparison.Ordinal) && candidate.Contains('}', StringComparison.Ordinal));
             var confidence = distinct.Length switch
             {
                 0 => "unknown",
-                1 => distinct[0].Contains('{', StringComparison.Ordinal) && distinct[0].Contains('}', StringComparison.Ordinal) ? "dynamic" : "certain",
+                _ when hasDynamicCandidate => "dynamic",
+                1 => "certain",
                 _ => "probable"
             };
 

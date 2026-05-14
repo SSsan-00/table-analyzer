@@ -127,7 +127,7 @@ internal sealed class MainForm : Form
         _customSqlMethodsTextBox.Multiline = true;
         _customSqlMethodsTextBox.ScrollBars = ScrollBars.Vertical;
         _customSqlMethodsTextBox.AcceptsReturn = true;
-        _customSqlMethodsTextBox.PlaceholderText = "例: ExecDb:0";
+        _customSqlMethodsTextBox.PlaceholderText = "例: ExecDb";
         _customSqlMethodsTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
         _customSqlMethodsTextBox.Height = 68;
 
@@ -381,7 +381,7 @@ internal sealed class MainForm : Form
 
         var label = new Label
         {
-            Text = "追加SQL実行メソッド",
+            Text = "解析対象メソッド",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
@@ -430,15 +430,8 @@ internal sealed class MainForm : Form
                 continue;
             }
 
-            var parts = line.Split(':', StringSplitOptions.TrimEntries);
-            if (parts.Length > 2)
-            {
-                methods = [];
-                error = $"{index + 1}行目の形式が不正です。形式は MethodName または MethodName:SqlArgumentIndex です。";
-                return false;
-            }
+            var methodName = line.Split(':', 2, StringSplitOptions.TrimEntries)[0];
 
-            var methodName = parts[0];
             if (string.IsNullOrWhiteSpace(methodName))
             {
                 methods = [];
@@ -446,16 +439,7 @@ internal sealed class MainForm : Form
                 return false;
             }
 
-            var sqlArgumentIndex = 0;
-            if (parts.Length == 2 &&
-                (!int.TryParse(parts[1], out sqlArgumentIndex) || sqlArgumentIndex < 0))
-            {
-                methods = [];
-                error = $"{index + 1}行目の引数位置は0以上の整数で指定してください。";
-                return false;
-            }
-
-            parsed.Add(new SqlExecutionMethodSpec(methodName, sqlArgumentIndex, AllowAnyReceiver: true));
+            parsed.Add(new SqlExecutionMethodSpec(methodName, 0, AllowAnyReceiver: true, AutoDetectSqlArgument: true));
         }
 
         methods = parsed;
