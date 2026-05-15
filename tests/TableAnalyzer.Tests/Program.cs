@@ -16,6 +16,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer follows helper method from context files", Tests.AnalyzerFollowsHelperMethodFromContextFiles),
     ("analyzer resolves helper method by using namespace", Tests.AnalyzerResolvesHelperMethodByUsingNamespace),
     ("analyzer resolves helper method overload by argument type", Tests.AnalyzerResolvesHelperMethodOverloadByArgumentType),
+    ("analyzer resolves helper method optional argument default", Tests.AnalyzerResolvesHelperMethodOptionalArgumentDefault),
+    ("analyzer resolves helper method named arguments", Tests.AnalyzerResolvesHelperMethodNamedArguments),
     ("analyzer resolves member constants and properties", Tests.AnalyzerResolvesMemberConstantsAndProperties),
     ("analyzer resolves branch and loop assignment candidates", Tests.AnalyzerResolvesBranchAndLoopAssignmentCandidates),
     ("analyzer drops overwritten value after complete branch assignment", Tests.AnalyzerDropsOverwrittenValueAfterCompleteBranchAssignment),
@@ -34,6 +36,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves configured sql argument index", Tests.AnalyzerResolvesConfiguredSqlArgumentIndex),
     ("analyzer auto detects configured sql argument", Tests.AnalyzerAutoDetectsConfiguredSqlArgument),
     ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
+    ("analyzer resolves mixed named caller argument into sql wrapper", Tests.AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper),
     ("analyzer resolves caller argument into context sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoContextSqlWrapper),
     ("analyzer resolves multiple caller argument candidates", Tests.AnalyzerResolvesMultipleCallerArgumentCandidates),
     ("analyzer reports dynamic caller argument candidate", Tests.AnalyzerReportsDynamicCallerArgumentCandidate),
@@ -319,6 +322,54 @@ internal static class Tests
                 public static string Build(string table) => "SELECT * FROM dbo." + table;
 
                 public static string Build(int tableId) => "SELECT * FROM dbo.NumericUsers";
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesHelperMethodOptionalArgumentDefault()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    db.Query(BuildSql("Users"));
+                }
+
+                string BuildSql(string table, string schema = "dbo")
+                {
+                    return "SELECT * FROM " + schema + "." + table;
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesHelperMethodNamedArguments()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    db.Query(BuildSql(table: "Users", schema: "dbo"));
+                }
+
+                string BuildSql(string schema, string table)
+                {
+                    return "SELECT * FROM " + schema + "." + table;
+                }
             }
             """);
 
@@ -803,6 +854,33 @@ internal static class Tests
                 void SearchUsers(string table)
                 {
                     var sql = "SELECT * FROM dbo." + table;
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Pages/Users.cshtml.cs")], configuration);
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("certain", result.TableUsages[0].Confidence);
+    }
+
+    public static void AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Pages/Users.cshtml.cs", """
+            class UsersModel
+            {
+                void OnGet()
+                {
+                    SearchUsers(schema: "dbo", "Users");
+                }
+
+                void SearchUsers(string schema, string table)
+                {
+                    var sql = "SELECT * FROM " + schema + "." + table;
                     db.ExecDb(sql);
                 }
             }

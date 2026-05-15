@@ -726,7 +726,7 @@ public sealed class SimpleSourceAnalyzer
             }
 
             return candidates
-                .Where(method => method.ParameterList.Parameters.Count <= argumentCount)
+                .Where(method => IsArgumentCountCompatible(method, argumentCount))
                 .ToArray();
         }
 
@@ -778,6 +778,21 @@ public sealed class SimpleSourceAnalyzer
         {
             var containingType = method.FirstAncestorOrSelf<TypeDeclarationSyntax>()?.Identifier.ValueText ?? "";
             return $"{containingType}.{method.Identifier.ValueText}/{method.ParameterList.Parameters.Count}";
+        }
+
+        private static int GetRequiredParameterCount(MethodDeclarationSyntax method)
+        {
+            return method.ParameterList.Parameters.Count(parameter =>
+                parameter.Default is null &&
+                !parameter.Modifiers.Any(SyntaxKind.ParamsKeyword));
+        }
+
+        private static bool IsArgumentCountCompatible(MethodDeclarationSyntax method, int argumentCount)
+        {
+            var parameters = method.ParameterList.Parameters;
+            var hasParamsParameter = parameters.Any(parameter => parameter.Modifiers.Any(SyntaxKind.ParamsKeyword));
+            return GetRequiredParameterCount(method) <= argumentCount &&
+                   (hasParamsParameter || argumentCount <= parameters.Count);
         }
     }
 
@@ -902,10 +917,19 @@ public sealed class SimpleSourceAnalyzer
                 {
                     parameterByName.TryGetValue(argument.NameColon.Name.Identifier.ValueText, out parameter);
                 }
-                else if (positionalIndex < parameters.Count)
+                else
                 {
-                    parameter = parameters[positionalIndex];
-                    positionalIndex++;
+                    while (positionalIndex < parameters.Count &&
+                           mapped.ContainsKey(parameters[positionalIndex].Identifier.ValueText))
+                    {
+                        positionalIndex++;
+                    }
+
+                    if (positionalIndex < parameters.Count)
+                    {
+                        parameter = parameters[positionalIndex];
+                        positionalIndex++;
+                    }
                 }
 
                 if (parameter is null)
@@ -1147,12 +1171,7 @@ public sealed class SimpleSourceAnalyzer
                     continue;
                 }
 
-                var nextParameters = new Dictionary<string, SymbolicValue>(StringComparer.Ordinal);
-                for (var index = 0; index < method.ParameterList.Parameters.Count; index++)
-                {
-                    var parameterName = method.ParameterList.Parameters[index].Identifier.ValueText;
-                    nextParameters[parameterName] = Evaluate(invocation.ArgumentList.Arguments[index].Expression, scope, parameters, depth, activeMethods);
-                }
+                var nextParameters = CreateParameterValues(method, invocation, scope, parameters, depth, activeMethods);
 
                 foreach (var returnExpression in GetReturnExpressions(method))
                 {
@@ -1168,6 +1187,61 @@ public sealed class SimpleSourceAnalyzer
             }
 
             return CombineAlternatives(evaluatedReturns, methodName);
+        }
+
+        private IReadOnlyDictionary<string, SymbolicValue> CreateParameterValues(
+            MethodDeclarationSyntax target,
+            InvocationExpressionSyntax invocation,
+            MethodDeclarationSyntax? callerScope,
+            IReadOnlyDictionary<string, SymbolicValue> callerParameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            var mapped = new Dictionary<string, SymbolicValue>(StringComparer.Ordinal);
+            var parameters = target.ParameterList.Parameters;
+            var parameterByName = parameters.ToDictionary(parameter => parameter.Identifier.ValueText, StringComparer.Ordinal);
+            var positionalIndex = 0;
+
+            foreach (var argument in invocation.ArgumentList.Arguments)
+            {
+                ParameterSyntax? parameter = null;
+                if (argument.NameColon is not null)
+                {
+                    parameterByName.TryGetValue(argument.NameColon.Name.Identifier.ValueText, out parameter);
+                }
+                else
+                {
+                    while (positionalIndex < parameters.Count &&
+                           mapped.ContainsKey(parameters[positionalIndex].Identifier.ValueText))
+                    {
+                        positionalIndex++;
+                    }
+
+                    if (positionalIndex < parameters.Count)
+                    {
+                        parameter = parameters[positionalIndex];
+                        positionalIndex++;
+                    }
+                }
+
+                if (parameter is null)
+                {
+                    continue;
+                }
+
+                mapped[parameter.Identifier.ValueText] = Evaluate(argument.Expression, callerScope, callerParameters, depth, activeMethods);
+            }
+
+            foreach (var parameter in parameters)
+            {
+                var parameterName = parameter.Identifier.ValueText;
+                if (!mapped.ContainsKey(parameterName) && parameter.Default?.Value is not null)
+                {
+                    mapped[parameterName] = Evaluate(parameter.Default.Value, target, new Dictionary<string, SymbolicValue>(StringComparer.Ordinal), depth, activeMethods);
+                }
+            }
+
+            return mapped;
         }
 
         private bool TryEvaluateStringBuilderToString(
