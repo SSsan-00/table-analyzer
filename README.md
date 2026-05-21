@@ -23,10 +23,12 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - 実行メソッド指定に依存せず、ソース中で構築されたSQLらしい文字列も `SqlString` として解析
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
 - `StringBuilder` の初期値、`Append`、`AppendLine`、`AppendFormat`、`ToString()` を解析
+- 配列や辞書などの `queries[1]` / `queries["key"]` 形式のインデクサを、同一メソッド内の初期化や代入から解決
 - ローカル変数、クラス定数、`static readonly`、フィールド初期化、プロパティ、単純なオブジェクト初期化/プロパティ代入を追跡
 - `if` / ループ内代入 / 三項演算子 / switch式などから候補を複数出力
 - 変数のシンボル一致、完全な `if/else` 上書き、`return` / `throw` 枝を考慮して過剰候補を抑制
 - T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
+- `SELECT` などの単語を含むだけの通常メッセージは、T-SQL ASTでテーブル/ビュー等を抽出できない限りSQL候補にしない
 - 動的テーブル名の `{table}` 形式プレースホルダを保持したままT-SQL AST解析
 - SQL実行メソッドの実行箇所を `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` として出力
 - クエリ単位・ソースファイル単位で CRUD 観点のサマリを出力
@@ -64,7 +66,7 @@ dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 
 `関連ファイルも再帰的に解析` を選ぶと、解析対象プロジェクトフォルダ全体を索引化し、解析対象から呼ばれる別ファイルのメソッドも再帰的に追跡します。単一ファイルから関連Repositoryまで見たい場合はこちらを使います。既定値は `関連ファイルも再帰的に解析` です。
 
-実行メソッドの指定は不要です。漏れ防止のため、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQLらしい文字列が構築されていれば `SqlExecutionMethod=SqlString` として解析します。`関連ファイルも再帰的に解析` の場合は、別メソッドや別ファイルの呼び出し先にも到達できる範囲で、呼び出し元の実引数を仮引数へ流して再評価します。
+実行メソッドの指定は不要です。漏れ防止のため、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQL文として構築された文字列があれば `SqlExecutionMethod=SqlString` として解析します。SQL候補かどうかは単純な文字列検索ではなく、T-SQL ASTでオブジェクトを抽出できるかで判定します。`関連ファイルも再帰的に解析` の場合は、別メソッドや別ファイルの呼び出し先にも到達できる範囲で、呼び出し元の実引数を仮引数へ流して再評価します。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 

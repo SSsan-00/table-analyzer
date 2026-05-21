@@ -407,7 +407,117 @@ public sealed class SimpleSourceAnalyzer
     private static bool ShouldCollectSqlStringExpression(ExpressionSyntax expression, string contextName)
     {
         return LooksLikeSqlCarrier(expression, contextName) ||
-               ContainsSqlKeyword(expression.ToString());
+               ContainsParseableSqlObject(expression);
+    }
+
+    private static bool ContainsParseableSqlObject(ExpressionSyntax expression)
+    {
+        return GetSqlProbeStrings(expression)
+            .Any(candidate => LooksLikeSqlStatement(candidate) && SqlObjectExtractor.Extract(candidate).Count > 0);
+    }
+
+    private static IReadOnlyList<string> GetSqlProbeStrings(ExpressionSyntax expression)
+    {
+        expression = UnwrapSqlProbeExpression(expression);
+        switch (expression)
+        {
+            case LiteralExpressionSyntax literal when literal.IsKind(SyntaxKind.StringLiteralExpression):
+                return [literal.Token.ValueText];
+            case InterpolatedStringExpressionSyntax interpolated:
+                return [BuildInterpolatedSqlProbe(interpolated)];
+            case BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.AddExpression):
+                return CombineSqlProbeStrings(binary.Left, binary.Right);
+            case InvocationExpressionSyntax invocation:
+                return GetInvocationSqlProbeStrings(invocation);
+            case ConditionalExpressionSyntax conditional:
+                return GetSqlProbeStrings(conditional.WhenTrue)
+                    .Concat(GetSqlProbeStrings(conditional.WhenFalse))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+            case SwitchExpressionSyntax switchExpression:
+                return switchExpression.Arms
+                    .SelectMany(arm => GetSqlProbeStrings(arm.Expression))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+            default:
+                return [];
+        }
+    }
+
+    private static IReadOnlyList<string> CombineSqlProbeStrings(ExpressionSyntax leftExpression, ExpressionSyntax rightExpression)
+    {
+        var left = GetSqlProbeStrings(leftExpression);
+        var right = GetSqlProbeStrings(rightExpression);
+        if (left.Count == 0 && right.Count == 0)
+        {
+            return [];
+        }
+
+        if (left.Count == 0)
+        {
+            left = [BuildPlaceholder(leftExpression)];
+        }
+
+        if (right.Count == 0)
+        {
+            right = [BuildPlaceholder(rightExpression)];
+        }
+
+        return left.SelectMany(leftCandidate => right.Select(rightCandidate => leftCandidate + rightCandidate))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> GetInvocationSqlProbeStrings(InvocationExpressionSyntax invocation)
+    {
+        var methodName = GetCallableName(invocation.Expression);
+        if (methodName is not "Format" || invocation.ArgumentList.Arguments.Count == 0)
+        {
+            return [];
+        }
+
+        return GetSqlProbeStrings(invocation.ArgumentList.Arguments[0].Expression)
+            .Select(NormalizeFormatSqlProbe)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string BuildInterpolatedSqlProbe(InterpolatedStringExpressionSyntax interpolated)
+    {
+        return string.Concat(interpolated.Contents.Select(content => content switch
+        {
+            InterpolatedStringTextSyntax text => text.TextToken.ValueText,
+            InterpolationSyntax interpolation => BuildPlaceholder(interpolation.Expression),
+            _ => ""
+        }));
+    }
+
+    private static string NormalizeFormatSqlProbe(string sql)
+    {
+        return Regex.Replace(sql, @"\{\d+(?:[^}]*)?\}", "{value}");
+    }
+
+    private static string BuildPlaceholder(ExpressionSyntax expression)
+    {
+        return "{" + expression + "}";
+    }
+
+    private static ExpressionSyntax UnwrapSqlProbeExpression(ExpressionSyntax expression)
+    {
+        while (true)
+        {
+            switch (expression)
+            {
+                case ParenthesizedExpressionSyntax parenthesized:
+                    expression = parenthesized.Expression;
+                    continue;
+                case CastExpressionSyntax cast:
+                    expression = cast.Expression;
+                    continue;
+                default:
+                    return expression;
+            }
+        }
     }
 
     private static bool IsStringConstructionInvocation(InvocationExpressionSyntax invocation)
@@ -479,11 +589,6 @@ public sealed class SimpleSourceAnalyzer
                normalized.Contains("commandtext", StringComparison.Ordinal) ||
                normalized.Contains("cmdtext", StringComparison.Ordinal) ||
                normalized.Contains("statement", StringComparison.Ordinal);
-    }
-
-    private static bool ContainsSqlKeyword(string text)
-    {
-        return Regex.IsMatch(text, @"\b(SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|WITH)\b", RegexOptions.IgnoreCase);
     }
 
     private static bool LooksLikeSqlStatement(string sql)
@@ -1272,6 +1377,8 @@ public sealed class SimpleSourceAnalyzer
                     EvaluateIdentifier(identifier, scope, parameters, depth, activeMethods),
                 MemberAccessExpressionSyntax memberAccess =>
                     EvaluateMemberAccess(memberAccess, scope, parameters, depth, activeMethods),
+                ElementAccessExpressionSyntax elementAccess =>
+                    EvaluateElementAccess(elementAccess, scope, parameters, depth, activeMethods),
                 InvocationExpressionSyntax invocation =>
                     EvaluateInvocation(invocation, scope, parameters, depth, activeMethods),
                 ConditionalExpressionSyntax conditional =>
@@ -1343,6 +1450,254 @@ public sealed class SimpleSourceAnalyzer
             }
 
             return Unknown(memberAccess);
+        }
+
+        private SymbolicValue EvaluateElementAccess(
+            ElementAccessExpressionSyntax elementAccess,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            var values = FindElementValues(elementAccess, scope, parameters, depth, activeMethods);
+            if (values.Count == 0)
+            {
+                return Unknown(elementAccess);
+            }
+
+            var evaluatedValues = values
+                .Select(value => Evaluate(value, scope, parameters, depth, activeMethods))
+                .ToArray();
+            var evaluated = CombineAlternatives(evaluatedValues, elementAccess.ToString());
+            return evaluated with
+            {
+                ResolutionPath = string.IsNullOrEmpty(evaluated.ResolutionPath)
+                    ? elementAccess.ToString()
+                    : $"{elementAccess} -> {evaluated.ResolutionPath}"
+            };
+        }
+
+        private IReadOnlyList<ExpressionSyntax> FindElementValues(
+            ElementAccessExpressionSyntax elementAccess,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            if (scope?.Body is null || elementAccess.ArgumentList.Arguments.Count == 0)
+            {
+                return [];
+            }
+
+            var targetSymbol = GetSymbol(elementAccess.Expression);
+            if (targetSymbol is null)
+            {
+                return [];
+            }
+
+            var keys = GetIndexKeys(elementAccess.ArgumentList.Arguments[0].Expression, scope, parameters, depth, activeMethods);
+            if (keys.Count == 0)
+            {
+                return [];
+            }
+
+            var initializers = FindCollectionInitializers(scope.Body, targetSymbol, elementAccess.SpanStart);
+            var lastInitializer = initializers
+                .OrderBy(initializer => initializer.Position)
+                .LastOrDefault();
+            var afterPosition = lastInitializer?.Position ?? int.MinValue;
+            var assignedValues = FindElementAssignments(scope.Body, targetSymbol, keys, afterPosition, elementAccess.SpanStart, scope, parameters, depth, activeMethods);
+            if (assignedValues.Count > 0)
+            {
+                return DistinctExpressionValues(assignedValues.Select(assignment => assignment.Value));
+            }
+
+            return lastInitializer is null
+                ? []
+                : GetInitializerElementValues(lastInitializer.Initializer, keys, scope, parameters, depth, activeMethods);
+        }
+
+        private IReadOnlyList<CollectionInitializer> FindCollectionInitializers(BlockSyntax body, ISymbol targetSymbol, int beforePosition)
+        {
+            var initializers = new List<CollectionInitializer>();
+            foreach (var declarator in body.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.Initializer?.Value is not null))
+            {
+                if (IsTargetDeclaration(declarator, targetSymbol))
+                {
+                    initializers.Add(new CollectionInitializer(declarator.Initializer!.Value, declarator.SpanStart));
+                }
+            }
+
+            foreach (var assignment in body.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                         .Where(item => item.SpanStart < beforePosition && item.IsKind(SyntaxKind.SimpleAssignmentExpression)))
+            {
+                if (IsTargetReference(assignment.Left, targetSymbol))
+                {
+                    initializers.Add(new CollectionInitializer(assignment.Right, assignment.SpanStart));
+                }
+            }
+
+            return initializers.ToArray();
+        }
+
+        private IReadOnlyList<ElementAssignment> FindElementAssignments(
+            BlockSyntax body,
+            ISymbol targetSymbol,
+            IReadOnlyList<string> keys,
+            int afterPosition,
+            int beforePosition,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            return body.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                .Where(item => item.SpanStart > afterPosition &&
+                               item.SpanStart < beforePosition &&
+                               item.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                .Where(item => item.Left is ElementAccessExpressionSyntax leftAccess &&
+                               IsTargetReference(leftAccess.Expression, targetSymbol) &&
+                               IndexMatches(leftAccess.ArgumentList, keys, scope, parameters, depth, activeMethods))
+                .Select(item => new ElementAssignment(item.Right, item.SpanStart))
+                .OrderBy(item => item.Position)
+                .ToArray();
+        }
+
+        private IReadOnlyList<ExpressionSyntax> GetInitializerElementValues(
+            ExpressionSyntax initializerExpression,
+            IReadOnlyList<string> keys,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            initializerExpression = Unwrap(initializerExpression);
+            return initializerExpression switch
+            {
+                ArrayCreationExpressionSyntax { Initializer: { } initializer } =>
+                    GetArrayInitializerValues(initializer, keys),
+                ImplicitArrayCreationExpressionSyntax { Initializer: { } initializer } =>
+                    GetArrayInitializerValues(initializer, keys),
+                ObjectCreationExpressionSyntax { Initializer: { } initializer } =>
+                    GetObjectCollectionInitializerValues(initializer, keys, scope, parameters, depth, activeMethods),
+                ImplicitObjectCreationExpressionSyntax { Initializer: { } initializer } =>
+                    GetObjectCollectionInitializerValues(initializer, keys, scope, parameters, depth, activeMethods),
+                _ => []
+            };
+        }
+
+        private static IReadOnlyList<ExpressionSyntax> GetArrayInitializerValues(InitializerExpressionSyntax initializer, IReadOnlyList<string> keys)
+        {
+            var values = new List<ExpressionSyntax>();
+            foreach (var key in keys)
+            {
+                if (int.TryParse(key, out var index) &&
+                    index >= 0 &&
+                    index < initializer.Expressions.Count)
+                {
+                    values.Add(initializer.Expressions[index]);
+                }
+            }
+
+            return DistinctExpressionValues(values);
+        }
+
+        private IReadOnlyList<ExpressionSyntax> GetObjectCollectionInitializerValues(
+            InitializerExpressionSyntax initializer,
+            IReadOnlyList<string> keys,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            var values = new List<ExpressionSyntax>();
+            foreach (var expression in initializer.Expressions)
+            {
+                if (expression is AssignmentExpressionSyntax assignment)
+                {
+                    foreach (var keyExpression in GetIndexerKeyExpressions(assignment.Left))
+                    {
+                        if (IndexExpressionMatches(keyExpression, keys, scope, parameters, depth, activeMethods))
+                        {
+                            values.Add(assignment.Right);
+                        }
+                    }
+                }
+                else if (expression is InitializerExpressionSyntax elementInitializer &&
+                         elementInitializer.Expressions.Count >= 2 &&
+                         IndexExpressionMatches(elementInitializer.Expressions[0], keys, scope, parameters, depth, activeMethods))
+                {
+                    values.Add(elementInitializer.Expressions[1]);
+                }
+            }
+
+            return DistinctExpressionValues(values);
+        }
+
+        private static IEnumerable<ExpressionSyntax> GetIndexerKeyExpressions(ExpressionSyntax expression)
+        {
+            return expression switch
+            {
+                ElementAccessExpressionSyntax elementAccess when elementAccess.ArgumentList.Arguments.Count > 0 =>
+                    [elementAccess.ArgumentList.Arguments[0].Expression],
+                ImplicitElementAccessSyntax implicitElementAccess when implicitElementAccess.ArgumentList.Arguments.Count > 0 =>
+                    [implicitElementAccess.ArgumentList.Arguments[0].Expression],
+                _ => []
+            };
+        }
+
+        private bool IndexMatches(
+            BracketedArgumentListSyntax argumentList,
+            IReadOnlyList<string> keys,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            return argumentList.Arguments.Count > 0 &&
+                   IndexExpressionMatches(argumentList.Arguments[0].Expression, keys, scope, parameters, depth, activeMethods);
+        }
+
+        private bool IndexExpressionMatches(
+            ExpressionSyntax expression,
+            IReadOnlyList<string> keys,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            var actualKeys = GetIndexKeys(expression, scope, parameters, depth, activeMethods);
+            return actualKeys.Any(actualKey => keys.Contains(actualKey, StringComparer.Ordinal));
+        }
+
+        private IReadOnlyList<string> GetIndexKeys(
+            ExpressionSyntax expression,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            expression = Unwrap(expression);
+            if (expression is LiteralExpressionSyntax literal)
+            {
+                if (literal.IsKind(SyntaxKind.StringLiteralExpression) ||
+                    literal.IsKind(SyntaxKind.NumericLiteralExpression))
+                {
+                    return [literal.Token.ValueText];
+                }
+            }
+
+            var constant = semanticContext.GetModel(expression.SyntaxTree).GetConstantValue(expression);
+            if (constant.HasValue && constant.Value is not null)
+            {
+                return [constant.Value.ToString() ?? ""];
+            }
+
+            var evaluated = Evaluate(expression, scope, parameters, depth, activeMethods);
+            return evaluated.Candidates.Count > 0
+                ? evaluated.Candidates
+                : [];
         }
 
         private SymbolicValue EvaluateInvocation(
@@ -2381,6 +2736,10 @@ public sealed class SimpleSourceAnalyzer
         private sealed record StringBuilderCreation(ExpressionSyntax Expression, int Position, IReadOnlyList<ArgumentSyntax> Arguments);
 
         private sealed record StringBuilderMutation(InvocationExpressionSyntax Invocation, string MethodName, IReadOnlyList<ArgumentSyntax> Arguments, SyntaxNode? ControlNode);
+
+        private sealed record CollectionInitializer(ExpressionSyntax Initializer, int Position);
+
+        private sealed record ElementAssignment(ExpressionSyntax Value, int Position);
     }
 
     private sealed record SqlObject(string ObjectType, string ObjectName, string FullName, string Operation, string SqlRole);

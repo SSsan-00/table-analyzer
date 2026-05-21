@@ -38,6 +38,10 @@ var tests = new (string Name, Action Body)[]
     ("analyzer records unresolved likely sql argument for auto detected method", Tests.AnalyzerRecordsUnresolvedLikelySqlArgumentForAutoDetectedMethod),
     ("analyzer keeps sql snippet when auto detected sql has no objects", Tests.AnalyzerKeepsSqlSnippetWhenAutoDetectedSqlHasNoObjects),
     ("analyzer collects sql string without configured execution method", Tests.AnalyzerCollectsSqlStringWithoutConfiguredExecutionMethod),
+    ("analyzer does not collect plain text containing sql keyword", Tests.AnalyzerDoesNotCollectPlainTextContainingSqlKeyword),
+    ("analyzer resolves array indexer sql", Tests.AnalyzerResolvesArrayIndexerSql),
+    ("analyzer resolves dictionary indexer sql", Tests.AnalyzerResolvesDictionaryIndexerSql),
+    ("analyzer resolves dictionary initializer indexer sql", Tests.AnalyzerResolvesDictionaryInitializerIndexerSql),
     ("analyzer collects sql string from reachable context method", Tests.AnalyzerCollectsSqlStringFromReachableContextMethod),
     ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
     ("analyzer resolves mixed named caller argument into sql wrapper", Tests.AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper),
@@ -923,6 +927,104 @@ internal static class Tests
         Assert.True(result.TableUsages.Count >= 1);
         Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.Users");
         Assert.Contains(result.SqlSnippets.Select(row => row.SqlExecutionMethod), "SqlString");
+    }
+
+    public static void AnalyzerDoesNotCollectPlainTextContainingSqlKeyword()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/MessageService.cs", """
+            class MessageService
+            {
+                void Run()
+                {
+                    var message = "Please SELECT a file before continuing.";
+                    Logger.Info(message);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/MessageService.cs")], new AnalyzerConfiguration());
+
+        Assert.Equal(0, result.TableUsages.Count);
+        Assert.Equal(0, result.SqlSnippets.Count);
+        Assert.Equal(0, result.UnresolvedSql.Count);
+    }
+
+    public static void AnalyzerResolvesArrayIndexerSql()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/ArraySqlService.cs", """
+            class ArraySqlService
+            {
+                void Run()
+                {
+                    var queries = new[]
+                    {
+                        "SELECT * FROM dbo.Users",
+                        "SELECT * FROM dbo.Orders"
+                    };
+                    db.Query(queries[1]);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/ArraySqlService.cs")], new AnalyzerConfiguration());
+
+        var queryUsages = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
+        Assert.Single(queryUsages);
+        Assert.Equal("dbo.Orders", queryUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesDictionaryIndexerSql()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/DictionarySqlService.cs", """
+            using System.Collections.Generic;
+
+            class DictionarySqlService
+            {
+                void Run()
+                {
+                    var queries = new Dictionary<string, string>();
+                    queries["users"] = "SELECT * FROM dbo.Users";
+                    queries["orders"] = "SELECT * FROM dbo.Orders";
+                    db.Query(queries["orders"]);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/DictionarySqlService.cs")], new AnalyzerConfiguration());
+
+        var queryUsages = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
+        Assert.Single(queryUsages);
+        Assert.Equal("dbo.Orders", queryUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesDictionaryInitializerIndexerSql()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/DictionaryInitializerSqlService.cs", """
+            using System.Collections.Generic;
+
+            class DictionaryInitializerSqlService
+            {
+                void Run()
+                {
+                    var queries = new Dictionary<string, string>
+                    {
+                        ["users"] = "SELECT * FROM dbo.Users",
+                        ["orders"] = "SELECT * FROM dbo.Orders"
+                    };
+                    db.Query(queries["orders"]);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/DictionaryInitializerSqlService.cs")], new AnalyzerConfiguration());
+
+        var queryUsages = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
+        Assert.Single(queryUsages);
+        Assert.Equal("dbo.Orders", queryUsages[0].FullName);
     }
 
     public static void AnalyzerCollectsSqlStringFromReachableContextMethod()
