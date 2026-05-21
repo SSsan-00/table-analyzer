@@ -49,6 +49,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer collects source local sql string", Tests.AnalyzerCollectsSourceLocalSqlString),
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
+    ("runner switches single file analysis scope for xlsx", Tests.RunnerSwitchesSingleFileAnalysisScopeForXlsx),
     ("runner writes xlsx only when requested", Tests.RunnerWritesXlsxOnlyWhenRequested),
     ("xlsx table usages includes sql text", Tests.XlsxTableUsagesIncludesSqlText),
     ("csv writer writes query and source crud summaries", Tests.CsvWriterWritesQueryAndSourceCrudSummaries),
@@ -1303,6 +1304,85 @@ internal static class Tests
         }
     }
 
+    public static void RunnerSwitchesSingleFileAnalysisScopeForXlsx()
+    {
+        using var temp = TempWorkspace.Create();
+        var target = temp.Write("Pages/Target.cshtml.cs", """
+            class TargetModel
+            {
+                void OnGet()
+                {
+                    var localSql = "SELECT * FROM dbo.LocalUsers";
+                    new UserRepository().SearchUsers("RelatedUsers");
+                }
+            }
+            """);
+        temp.Write("Infrastructure/UserRepository.cs", """
+            class UserRepository
+            {
+                public void SearchUsers(string table)
+                {
+                    var sql = "SELECT * FROM dbo." + table;
+                }
+            }
+            """);
+
+        var targetOnlyOutput = Path.Combine(Path.GetTempPath(), "table-analyzer-output-tests", Guid.NewGuid().ToString("N"));
+        var relatedOutput = Path.Combine(Path.GetTempPath(), "table-analyzer-output-tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var targetOnly = new AnalysisRunner().Run(
+                new AnalysisRunRequest(
+                    temp.Root,
+                    Path.Combine(temp.Root, "Pages"),
+                    target,
+                    targetOnlyOutput,
+                    ReportOutputFormat.Xlsx,
+                    AnalysisScope.TargetOnly),
+                new AnalyzerConfiguration(),
+                new DateTime(2026, 5, 12, 9, 0, 0));
+
+            Assert.Equal(AnalysisScope.TargetOnly, targetOnly.AnalysisScope);
+            Assert.Equal(1, targetOnly.ContextFiles.Count);
+            Assert.Single(targetOnly.AnalysisResult.TableUsages);
+            Assert.Equal("dbo.LocalUsers", targetOnly.AnalysisResult.TableUsages[0].FullName);
+            Assert.True(File.Exists(Path.Combine(targetOnly.ReportDirectory, "table-analysis.xlsx")));
+            var targetOnlyXml = ReadAllWorksheetXml(Path.Combine(targetOnly.ReportDirectory, "table-analysis.xlsx"));
+            Assert.Contains(targetOnlyXml, "AnalysisScope");
+            Assert.Contains(targetOnlyXml, "TargetOnly");
+
+            var related = new AnalysisRunner().Run(
+                new AnalysisRunRequest(
+                    temp.Root,
+                    Path.Combine(temp.Root, "Pages"),
+                    target,
+                    relatedOutput,
+                    ReportOutputFormat.Xlsx,
+                    AnalysisScope.RelatedFiles),
+                new AnalyzerConfiguration(),
+                new DateTime(2026, 5, 12, 9, 0, 0));
+
+            Assert.Equal(AnalysisScope.RelatedFiles, related.AnalysisScope);
+            Assert.True(related.ContextFiles.Count >= 2);
+            Assert.Contains(related.AnalysisResult.TableUsages.Select(row => row.FullName), "dbo.LocalUsers");
+            Assert.Contains(related.AnalysisResult.TableUsages.Select(row => row.FullName), "dbo.RelatedUsers");
+            Assert.True(File.Exists(Path.Combine(related.ReportDirectory, "table-analysis.xlsx")));
+        }
+        finally
+        {
+            if (Directory.Exists(targetOnlyOutput))
+            {
+                Directory.Delete(targetOnlyOutput, recursive: true);
+            }
+
+            if (Directory.Exists(relatedOutput))
+            {
+                Directory.Delete(relatedOutput, recursive: true);
+            }
+        }
+    }
+
     public static void RunnerWritesXlsxOnlyWhenRequested()
     {
         using var temp = TempWorkspace.Create();
@@ -1445,6 +1525,20 @@ internal static class Tests
         Assert.Contains(lines[0], "ExecutionSourceFile,ExecutionLine,ExecutionColumn");
         Assert.True(lines[0].EndsWith(",SqlText", StringComparison.Ordinal), lines[0]);
         Assert.True(lines[1].EndsWith(",SELECT * FROM dbo.Users", StringComparison.Ordinal), lines[1]);
+    }
+
+    private static string ReadAllWorksheetXml(string xlsxPath)
+    {
+        using var archive = ZipFile.OpenRead(xlsxPath);
+        var builder = new StringBuilder();
+        foreach (var entry in archive.Entries.Where(entry => entry.FullName.StartsWith("xl/worksheets/", StringComparison.Ordinal)))
+        {
+            using var stream = entry.Open();
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            builder.Append(reader.ReadToEnd());
+        }
+
+        return builder.ToString();
     }
 
     private static AnalyzerConfiguration ConfigurationWithAutoMethod(string methodName)

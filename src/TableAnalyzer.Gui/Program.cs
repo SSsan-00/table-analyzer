@@ -22,12 +22,15 @@ internal sealed class MainForm : Form
     private readonly PathInputRow _analysisFileRow;
     private readonly PathInputRow _outputRootRow;
     private readonly ComboBox _outputFormatComboBox = new();
+    private readonly ComboBox _analysisScopeComboBox = new();
     private readonly Button _runButton = new();
     private readonly Button _openReportButton = new();
     private readonly ProgressBar _progressBar = new();
     private readonly Label _progressLabel = new();
     private readonly TextBox _resultTextBox = new();
     private string _lastReportDirectory = "";
+    private const string TargetOnlyScopeLabel = "指定範囲のみ";
+    private const string RelatedFilesScopeLabel = "関連ファイルも再帰";
 
     public MainForm()
     {
@@ -41,6 +44,7 @@ internal sealed class MainForm : Form
         _analysisFileRow = PathInputRow.ForFile("解析対象ファイル", settings.AnalysisFile);
         _outputRootRow = PathInputRow.ForFolder("出力先フォルダ", settings.OutputRoot);
         ConfigureOutputFormat(settings.OutputFormat);
+        ConfigureAnalysisScope(settings.AnalysisScope);
 
         _projectFolderRow.PathSelected += path =>
         {
@@ -95,6 +99,15 @@ internal sealed class MainForm : Form
             : "csv";
     }
 
+    private void ConfigureAnalysisScope(string value)
+    {
+        _analysisScopeComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _analysisScopeComboBox.Items.AddRange([TargetOnlyScopeLabel, RelatedFilesScopeLabel]);
+        _analysisScopeComboBox.SelectedItem = string.Equals(value, "target-only", StringComparison.OrdinalIgnoreCase)
+            ? TargetOnlyScopeLabel
+            : RelatedFilesScopeLabel;
+    }
+
     private void ConfigureProgress()
     {
         _progressBar.Dock = DockStyle.Fill;
@@ -142,11 +155,13 @@ internal sealed class MainForm : Form
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.Controls.Add(_projectFolderRow, 0, 0);
         inputPanel.Controls.Add(_analysisFolderRow, 0, 1);
         inputPanel.Controls.Add(_analysisFileRow, 0, 2);
         inputPanel.Controls.Add(_outputRootRow, 0, 3);
         inputPanel.Controls.Add(BuildOutputFormatRow(), 0, 4);
+        inputPanel.Controls.Add(BuildAnalysisScopeRow(), 0, 5);
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -186,7 +201,8 @@ internal sealed class MainForm : Form
             _analysisFolderRow.PathValue,
             string.IsNullOrWhiteSpace(_analysisFileRow.PathValue) ? null : _analysisFileRow.PathValue,
             _outputRootRow.PathValue,
-            SelectedOutputFormat);
+            SelectedOutputFormat,
+            SelectedAnalysisScope);
 
         if (!ValidateRequest(request))
         {
@@ -262,6 +278,7 @@ internal sealed class MainForm : Form
         _analysisFileRow.Enabled = !busy;
         _outputRootRow.Enabled = !busy;
         _outputFormatComboBox.Enabled = !busy;
+        _analysisScopeComboBox.Enabled = !busy;
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
     }
 
@@ -286,7 +303,8 @@ internal sealed class MainForm : Form
             _analysisFolderRow.PathValue,
             _analysisFileRow.PathValue,
             _outputRootRow.PathValue,
-            _outputFormatComboBox.SelectedItem?.ToString() ?? "csv"));
+            _outputFormatComboBox.SelectedItem?.ToString() ?? "csv",
+            FormatAnalysisScope(SelectedAnalysisScope)));
     }
 
     private static string BuildResultText(AnalysisRunResult run)
@@ -295,6 +313,7 @@ internal sealed class MainForm : Form
         [
             $"出力先: {run.ReportDirectory}",
             $"出力形式: {run.OutputFormat.ToString().ToLowerInvariant()}",
+            $"解析範囲: {FormatAnalysisScope(run.AnalysisScope)}",
             $"解析ファイル数: {run.AnalysisFiles.Count}",
             $"索引ファイル数: {run.ContextFiles.Count}",
             $"SQLスニペット: {run.AnalysisResult.SqlSnippets.Count}",
@@ -309,6 +328,16 @@ internal sealed class MainForm : Form
         string.Equals(_outputFormatComboBox.SelectedItem?.ToString(), "xlsx", StringComparison.OrdinalIgnoreCase)
             ? ReportOutputFormat.Xlsx
             : ReportOutputFormat.Csv;
+
+    private AnalysisScope SelectedAnalysisScope =>
+        string.Equals(_analysisScopeComboBox.SelectedItem?.ToString(), TargetOnlyScopeLabel, StringComparison.Ordinal)
+            ? AnalysisScope.TargetOnly
+            : AnalysisScope.RelatedFiles;
+
+    private static string FormatAnalysisScope(AnalysisScope scope)
+    {
+        return scope == AnalysisScope.TargetOnly ? "target-only" : "related-files";
+    }
 
     private Control BuildOutputFormatRow()
     {
@@ -333,6 +362,32 @@ internal sealed class MainForm : Form
 
         layout.Controls.Add(label, 0, 0);
         layout.Controls.Add(_outputFormatComboBox, 1, 0);
+        return layout;
+    }
+
+    private Control BuildAnalysisScopeRow()
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(0, 0, 0, 10)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+
+        var label = new Label
+        {
+            Text = "解析範囲",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _analysisScopeComboBox.Dock = DockStyle.Fill;
+
+        layout.Controls.Add(label, 0, 0);
+        layout.Controls.Add(_analysisScopeComboBox, 1, 0);
         return layout;
     }
 
@@ -476,7 +531,8 @@ internal sealed record GuiSettings(
     string AnalysisFolder = "",
     string AnalysisFile = "",
     string OutputRoot = "",
-    string OutputFormat = "csv");
+    string OutputFormat = "csv",
+    string AnalysisScope = "related-files");
 
 internal static class GuiSettingsStore
 {

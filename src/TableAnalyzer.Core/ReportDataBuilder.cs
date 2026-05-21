@@ -111,18 +111,21 @@ internal static class ReportDataBuilder
             ]).ToArray())
         };
 
-        var summaryLines = new[]
-        {
-            $"GeneratedAt: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-            $"Table usages: {result.TableUsages.Count}",
-            $"Query CRUD summaries: {queryCrudSummaries.Count}",
-            $"Source CRUD summaries: {sourceCrudSummaries.Count}",
-            $"Table summaries: {summaries.Count}",
-            $"Dynamic SQL: {result.DynamicSql.Count}",
-            $"Unresolved SQL: {result.UnresolvedSql.Count}",
-            $"SQL snippets: {result.SqlSnippets.Count}",
-            $"Warnings: {result.Warnings.Count}"
-        };
+        var summaryLines = result.ReportMetadata
+            .Select(row => $"{row.Name}: {row.Value}")
+            .Concat(
+            [
+                $"GeneratedAt: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                $"Table usages: {result.TableUsages.Count}",
+                $"Query CRUD summaries: {queryCrudSummaries.Count}",
+                $"Source CRUD summaries: {sourceCrudSummaries.Count}",
+                $"Table summaries: {summaries.Count}",
+                $"Dynamic SQL: {result.DynamicSql.Count}",
+                $"Unresolved SQL: {result.UnresolvedSql.Count}",
+                $"SQL snippets: {result.SqlSnippets.Count}",
+                $"Warnings: {result.Warnings.Count}"
+            ])
+            .ToArray();
 
         return new ReportData(tables, summaryLines);
     }

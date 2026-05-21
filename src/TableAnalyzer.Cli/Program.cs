@@ -34,6 +34,7 @@ internal static class CliProgram
             Console.Error.WriteLine($"Project folder: {Path.GetFullPath(request.ProjectFolder)}");
             Console.Error.WriteLine($"Analysis folder: {Path.GetFullPath(request.AnalysisFolder)}");
             Console.Error.WriteLine($"Output format: {request.OutputFormat.ToString().ToLowerInvariant()}");
+            Console.Error.WriteLine($"Analysis scope: {FormatAnalysisScope(request.AnalysisScope)}");
             if (!string.IsNullOrWhiteSpace(request.AnalysisFile))
             {
                 Console.Error.WriteLine($"Analysis file: {Path.GetFullPath(request.AnalysisFile)}");
@@ -48,6 +49,7 @@ internal static class CliProgram
             Console.WriteLine($"Analysis folder: {Path.GetFullPath(request.AnalysisFolder)}");
             Console.WriteLine($"Analysis file: {(string.IsNullOrWhiteSpace(request.AnalysisFile) ? "(none)" : Path.GetFullPath(request.AnalysisFile))}");
             Console.WriteLine($"Mode: {(string.IsNullOrWhiteSpace(request.AnalysisFile) ? "Directory recursive" : "Single file")}");
+            Console.WriteLine($"Analysis scope: {FormatAnalysisScope(run.AnalysisScope)}");
             Console.WriteLine($"Context files indexed: {run.ContextFiles.Count}");
             Console.WriteLine($"Files analyzed: {run.AnalysisFiles.Count}");
             Console.WriteLine($"SQL snippets: {run.AnalysisResult.SqlSnippets.Count}");
@@ -84,7 +86,7 @@ internal static class CliProgram
             }
 
             options.TryGetValue("analysis-file", out var analysisFile);
-            return new AnalysisRunRequest(projectFolder, analysisFolder, analysisFile, outputRoot, ParseOutputFormat(options));
+            return new AnalysisRunRequest(projectFolder, analysisFolder, analysisFile, outputRoot, ParseOutputFormat(options), ParseAnalysisScope(options));
         }
 
         if (!options.TryGetValue("input", out var input) || string.IsNullOrWhiteSpace(input))
@@ -96,10 +98,10 @@ internal static class CliProgram
         if (File.Exists(fullInput))
         {
             var parent = Path.GetDirectoryName(fullInput) ?? Directory.GetCurrentDirectory();
-            return new AnalysisRunRequest(parent, parent, fullInput, outputRoot, ParseOutputFormat(options));
+            return new AnalysisRunRequest(parent, parent, fullInput, outputRoot, ParseOutputFormat(options), ParseAnalysisScope(options));
         }
 
-        return new AnalysisRunRequest(fullInput, fullInput, null, outputRoot, ParseOutputFormat(options));
+        return new AnalysisRunRequest(fullInput, fullInput, null, outputRoot, ParseOutputFormat(options), ParseAnalysisScope(options));
     }
 
     private static ReportOutputFormat ParseOutputFormat(IReadOnlyDictionary<string, string> options)
@@ -115,6 +117,26 @@ internal static class CliProgram
             "xlsx" => ReportOutputFormat.Xlsx,
             _ => throw new ArgumentException("Invalid --format. Use csv or xlsx.")
         };
+    }
+
+    private static AnalysisScope ParseAnalysisScope(IReadOnlyDictionary<string, string> options)
+    {
+        if (!options.TryGetValue("analysis-scope", out var value) && !options.TryGetValue("scope", out value))
+        {
+            return AnalysisScope.RelatedFiles;
+        }
+
+        return value.ToLowerInvariant() switch
+        {
+            "target" or "target-only" or "file" or "file-only" => AnalysisScope.TargetOnly,
+            "related" or "related-files" or "recursive" => AnalysisScope.RelatedFiles,
+            _ => throw new ArgumentException("Invalid --analysis-scope. Use target-only or related-files.")
+        };
+    }
+
+    private static string FormatAnalysisScope(AnalysisScope scope)
+    {
+        return scope == AnalysisScope.TargetOnly ? "target-only" : "related-files";
     }
 
     private static AnalyzerConfiguration BuildConfiguration(IReadOnlyDictionary<string, string> options)
@@ -188,6 +210,7 @@ internal static class CliProgram
         Console.WriteLine("  --max-call-depth 8");
         Console.WriteLine("  --max-candidates 50");
         Console.WriteLine("  --format csv|xlsx");
+        Console.WriteLine("  --analysis-scope target-only|related-files");
         Console.WriteLine("  --quiet");
     }
 

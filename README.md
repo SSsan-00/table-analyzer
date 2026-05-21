@@ -56,10 +56,15 @@ dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 - 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
 - 出力先フォルダ: レポートの出力先
 - 出力形式: `csv` または `xlsx`
+- 解析範囲: `指定範囲のみ` または `関連ファイルも再帰`
 
 各パスは `選択` ボタンでフォルダ/ファイル選択できます。各入力欄の `クリア` ボタンで空に戻せます。テキストボックスへのドラッグ&ドロップにも対応しています。
 
-実行メソッドの指定は不要です。漏れ防止のため、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQLらしい文字列が構築されていれば `SqlExecutionMethod=SqlString` として解析します。別メソッドや別ファイルの呼び出し先にも到達できる場合は、呼び出し元の実引数を仮引数へ流して再評価します。
+解析範囲で `指定範囲のみ` を選ぶと、解析対象ファイルを指定した場合はそのファイルだけ、解析対象ファイルを省略した場合は解析対象フォルダ配下だけを索引化します。関連ファイルのhelperやRepositoryには入りません。
+
+`関連ファイルも再帰` を選ぶと、解析対象プロジェクトフォルダ全体を索引化し、解析対象から呼ばれる別ファイルのメソッドも再帰的に追跡します。単一ファイルから関連Repositoryまで見たい場合はこちらを使います。既定値は `関連ファイルも再帰` です。
+
+実行メソッドの指定は不要です。漏れ防止のため、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQLらしい文字列が構築されていれば `SqlExecutionMethod=SqlString` として解析します。`関連ファイルも再帰` の場合は、別メソッドや別ファイルの呼び出し先にも到達できる範囲で、呼び出し元の実引数を仮引数へ流して再評価します。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 
@@ -85,7 +90,21 @@ dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
   --analysis-folder /path/to/MyApp/Pages \
   --analysis-file /path/to/MyApp/Pages/Users/Index.cshtml.cs \
   --out /path/to/table-analysis \
-  --format xlsx
+  --format xlsx \
+  --analysis-scope related-files
+```
+
+単一ファイル内だけをExcel出力する場合:
+
+```bash
+dotnet run --project src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -- \
+  analyze \
+  --project-folder /path/to/MyApp \
+  --analysis-folder /path/to/MyApp/Pages \
+  --analysis-file /path/to/MyApp/Pages/Users/Index.cshtml.cs \
+  --out /path/to/table-analysis \
+  --format xlsx \
+  --analysis-scope target-only
 ```
 
 ビルド済みDLLを実行する場合:
@@ -114,6 +133,7 @@ dotnet src/TableAnalyzer.Cli/bin/Release/net9.0/TableAnalyzer.Cli.dll \
 ```text
 Project folder: C:\src\MyApp
 Analysis folder: C:\src\MyApp\Pages
+Analysis scope: related-files
 Scanning project context and analysis targets...
 Indexing: 0/1840 (0%)
 Indexing: 25/1840 (1%) Services\UserService.cs
@@ -188,7 +208,8 @@ table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 - `sql-snippets` が少ない: SQL文字列の構築自体を検出できていない可能性があります。解析対象ファイルを指定している場合は、解析対象ファイルを省略してフォルダ全体を解析してください。
 - `unresolved-sql` が多い: 実行箇所は検出できていますが、SQL文字列やテーブル名を静的に確定できていません。
 - `warnings` がある: ファイル読み込みや構文解析で除外されたファイルがあります。
-- 解析対象ファイルを指定している: そのファイルから到達できる呼び出しを中心に解析します。別ファイル単体で実行されるSQLも拾う場合は、解析対象ファイルを省略してフォルダ全体を解析してください。
+- 解析対象ファイルを指定していて `target-only` を使っている: 指定ファイル内だけを解析します。関連Repositoryやhelperも見る場合は `related-files` を使ってください。
+- 解析対象ファイルを指定していて `related-files` でも少ない: そのファイルから到達できる呼び出しを中心に解析します。別ファイル単体で実行されるSQLも拾う場合は、解析対象ファイルを省略してフォルダ全体を解析してください。
 - 対象外拡張子や除外フォルダにSQLがある: 既定では `.cs` / `.cshtml.cs` を解析し、`bin`、`obj`、`Migrations` などは除外します。
 
 静的解析のため、外部ライブラリ内部、DB設定値、環境変数、実行時に組み立てられる値は完全には確定できません。その場合も、実行箇所を検出できたものは `unresolved-sql` に残す方針です。
@@ -236,7 +257,8 @@ WinForms GUIを起動する場合:
   -ProjectFolder "C:\src\MyApp" `
   -AnalysisFolder "C:\src\MyApp\Pages" `
   -Out "C:\work\table-analysis" `
-  -Format csv
+  -Format csv `
+  -AnalysisScope related-files
 ```
 
 単一ファイルだけ解析する場合:

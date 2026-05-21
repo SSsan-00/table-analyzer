@@ -85,6 +85,8 @@ public sealed record AnalysisProgress(
     int Total,
     string CurrentFile);
 
+public sealed record ReportMetadataRow(string Name, string Value);
+
 public sealed class AnalysisResult
 {
     public List<TableUsageRow> TableUsages { get; } = [];
@@ -98,4 +100,6 @@ public sealed class AnalysisResult
     public List<SqlSnippetRow> SqlSnippets { get; } = [];
 
     public List<WarningRow> Warnings { get; } = [];
+
+    public List<ReportMetadataRow> ReportMetadata { get; } = [];
 }

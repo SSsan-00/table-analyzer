@@ -5,7 +5,8 @@ public sealed record AnalysisRunRequest(
     string AnalysisFolder,
     string? AnalysisFile,
     string OutputRoot,
-    ReportOutputFormat OutputFormat = ReportOutputFormat.Csv);
+    ReportOutputFormat OutputFormat = ReportOutputFormat.Csv,
+    AnalysisScope AnalysisScope = AnalysisScope.RelatedFiles);
 
 public enum ReportOutputFormat
 {
@@ -13,12 +14,19 @@ public enum ReportOutputFormat
     Xlsx
 }
 
+public enum AnalysisScope
+{
+    TargetOnly,
+    RelatedFiles
+}
+
 public sealed record AnalysisRunResult(
     string ReportDirectory,
     IReadOnlyList<SourceFile> AnalysisFiles,
     IReadOnlyList<SourceFile> ContextFiles,
     AnalysisResult AnalysisResult,
-    ReportOutputFormat OutputFormat);
+    ReportOutputFormat OutputFormat,
+    AnalysisScope AnalysisScope);
 
 public sealed class AnalysisRunner
 {
@@ -54,10 +62,18 @@ public sealed class AnalysisRunner
         var scanner = new FileSystemScanner();
         var analysisInput = analysisFile ?? analysisFolder;
         var analysisFiles = scanner.GetSourceFiles(analysisInput, configuration);
-        var contextFiles = Merge(scanner.GetSourceFiles(projectFolder, configuration), analysisFiles);
+        var contextFiles = request.AnalysisScope == AnalysisScope.RelatedFiles
+            ? Merge(scanner.GetSourceFiles(projectFolder, configuration), analysisFiles)
+            : analysisFiles;
 
         var reportDirectory = new ReportDirectoryFactory().Create(outputRoot, analysisInput, now);
         var result = new SimpleSourceAnalyzer().Analyze(analysisFiles, contextFiles, configuration, progress);
+        result.ReportMetadata.Add(new ReportMetadataRow("ProjectFolder", projectFolder));
+        result.ReportMetadata.Add(new ReportMetadataRow("AnalysisFolder", analysisFolder));
+        result.ReportMetadata.Add(new ReportMetadataRow("AnalysisFile", analysisFile ?? ""));
+        result.ReportMetadata.Add(new ReportMetadataRow("AnalysisScope", request.AnalysisScope.ToString()));
+        result.ReportMetadata.Add(new ReportMetadataRow("OutputFormat", request.OutputFormat.ToString()));
+
         if (request.OutputFormat == ReportOutputFormat.Xlsx)
         {
             new XlsxReportWriter().Write(reportDirectory, result);
@@ -67,7 +83,7 @@ public sealed class AnalysisRunner
             new CsvReportWriter().Write(reportDirectory, result);
         }
 
-        return new AnalysisRunResult(reportDirectory, analysisFiles, contextFiles, result, request.OutputFormat);
+        return new AnalysisRunResult(reportDirectory, analysisFiles, contextFiles, result, request.OutputFormat, request.AnalysisScope);
     }
 
     private static IReadOnlyList<SourceFile> Merge(IReadOnlyList<SourceFile> first, IReadOnlyList<SourceFile> second)
