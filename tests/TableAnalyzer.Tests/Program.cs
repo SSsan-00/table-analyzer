@@ -49,6 +49,7 @@ var tests = new (string Name, Action Body)[]
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
     ("runner writes xlsx only when requested", Tests.RunnerWritesXlsxOnlyWhenRequested),
     ("xlsx table usages includes sql text", Tests.XlsxTableUsagesIncludesSqlText),
+    ("csv writer writes query and source crud summaries", Tests.CsvWriterWritesQueryAndSourceCrudSummaries),
     ("csv writer writes all expected files with bom", Tests.CsvWriterWritesAllExpectedFilesWithBom),
 };
 
@@ -1304,6 +1305,40 @@ internal static class Tests
         }
     }
 
+    public static void CsvWriterWritesQueryAndSourceCrudSummaries()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/UserService.cs", """
+            class UserService
+            {
+                void Run()
+                {
+                    db.Query("SELECT * FROM dbo.Users");
+                    db.Execute("INSERT INTO dbo.Users (Name) VALUES (@name)");
+                    db.Execute("UPDATE dbo.Users SET Name = @name WHERE Id = @id");
+                    db.Execute("DELETE FROM dbo.Sessions WHERE ExpiresAt < @now");
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
+        new CsvReportWriter().Write(temp.Root, result);
+
+        var queryLines = File.ReadAllLines(Path.Combine(temp.Root, "query-crud-summary.csv"), Encoding.UTF8);
+        Assert.Contains(queryLines[0], "CrudFlags");
+        Assert.True(queryLines.Any(line => line.Contains("S000001", StringComparison.Ordinal) && line.Contains("Read", StringComparison.Ordinal) && line.Contains("dbo.Users", StringComparison.Ordinal)));
+        Assert.True(queryLines.Any(line => line.Contains("S000002", StringComparison.Ordinal) && line.Contains("Create", StringComparison.Ordinal) && line.Contains("dbo.Users", StringComparison.Ordinal)));
+        Assert.True(queryLines.Any(line => line.Contains("S000003", StringComparison.Ordinal) && line.Contains("Update", StringComparison.Ordinal) && line.Contains("dbo.Users", StringComparison.Ordinal)));
+        Assert.True(queryLines.Any(line => line.Contains("S000004", StringComparison.Ordinal) && line.Contains("Delete", StringComparison.Ordinal) && line.Contains("dbo.Sessions", StringComparison.Ordinal)));
+
+        var sourceLines = File.ReadAllLines(Path.Combine(temp.Root, "source-crud-summary.csv"), Encoding.UTF8);
+        Assert.Contains(sourceLines[0], "ReadTables,CreateTables,UpdateTables,DeleteTables");
+        Assert.Single(sourceLines.Skip(1).ToArray());
+        Assert.Contains(sourceLines[1], "Create|Read|Update|Delete");
+        Assert.Contains(sourceLines[1], "dbo.Users");
+        Assert.Contains(sourceLines[1], "dbo.Sessions");
+    }
+
     public static void CsvWriterWritesAllExpectedFilesWithBom()
     {
         using var temp = TempWorkspace.Create();
@@ -1316,6 +1351,8 @@ internal static class Tests
         var expected = new[]
         {
             "table-usages.csv",
+            "query-crud-summary.csv",
+            "source-crud-summary.csv",
             "table-summary.csv",
             "dynamic-sql.csv",
             "unresolved-sql.csv",

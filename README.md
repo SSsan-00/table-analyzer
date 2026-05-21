@@ -29,6 +29,7 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
 - 動的テーブル名の `{table}` 形式プレースホルダを保持したままT-SQL AST解析
 - SQL実行メソッドの実行箇所を `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` として出力
+- クエリ単位・ソースファイル単位で CRUD 観点のサマリを出力
 - UTF-8 / Shift-JIS(CP932) のソースを読み取り
 - 出力形式は CSV または XLSX を選択可能。CSVは UTF-8 BOM付きで出力
 
@@ -173,6 +174,8 @@ CSV形式を選んだ場合:
 
 ```text
 table-usages.csv      SQL内のテーブル/ビュー/Procedure出現ごとの詳細。実行箇所とSQL全文を出力
+query-crud-summary.csv  SQL文字列ごとのCRUDサマリ
+source-crud-summary.csv ソースファイルごとのCRUDサマリ
 table-summary.csv     FullName単位の集計
 dynamic-sql.csv       動的SQLや候補展開の詳細
 unresolved-sql.csv    SQL文字列やテーブル名を解決できなかった箇所
@@ -188,6 +191,8 @@ table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 ```
 
 `table-usages` と `sql-snippets` の `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` は、SQL実行メソッド呼び出しの位置です。既存互換のため `SourceFile` / `Line` / `Column` も同じ位置を保持しています。
+
+`query-crud-summary` は `SqlId` 単位で、1つのSQL文字列がどのテーブルを `Create` / `Read` / `Update` / `Delete` するかを出力します。`source-crud-summary` は `SourceFile` 単位で集計し、そのソースファイルの機能をCRUD視点で確認できるようにします。`MERGE` と `EXEC` はCRUDに単純分類しきれないため、`MergeTables` / `ExecuteProcedures` として別列にも出力します。
 
 ## ヒット件数が少ないとき
 
