@@ -21,12 +21,13 @@ internal static class ReportDataBuilder
             [
                 "UsageId", "SqlId", "ObjectType", "ObjectName", "FullName", "Operation", "SqlRole", "Confidence",
                 "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "CallChain", "CallDepth",
-                "DynamicPattern", "CandidateGroupId", "Notes", "SqlText"
+                "ExecutionSourceFile", "ExecutionLine", "ExecutionColumn", "DynamicPattern", "CandidateGroupId", "Notes", "SqlText"
             ], result.TableUsages.Select(row => (IReadOnlyList<string>)
             [
                 row.UsageId, row.SqlId, row.ObjectType, row.ObjectName, row.FullName, row.Operation, row.SqlRole,
                 row.Confidence, row.SourceFile, row.Line.ToString(), row.Column.ToString(), row.ContainingSymbol,
-                row.SqlExecutionMethod, row.CallChain, row.CallDepth.ToString(), row.DynamicPattern,
+                row.SqlExecutionMethod, row.CallChain, row.CallDepth.ToString(), row.SourceFile, row.Line.ToString(),
+                row.Column.ToString(), row.DynamicPattern,
                 row.CandidateGroupId, row.Notes, sqlTextById.GetValueOrDefault(row.SqlId, "")
             ]).ToArray()),
 
@@ -53,21 +54,23 @@ internal static class ReportDataBuilder
             new("unresolved-sql",
             [
                 "SqlId", "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "Reason",
-                "Expression", "CallChain", "Notes"
+                "ExecutionSourceFile", "ExecutionLine", "ExecutionColumn", "Expression", "CallChain", "Notes"
             ], result.UnresolvedSql.Select(row => (IReadOnlyList<string>)
             [
                 row.SqlId, row.SourceFile, row.Line.ToString(), row.Column.ToString(), row.ContainingSymbol,
-                row.SqlExecutionMethod, row.Reason, row.Expression, row.CallChain, row.Notes
+                row.SqlExecutionMethod, row.Reason, row.SourceFile, row.Line.ToString(), row.Column.ToString(),
+                row.Expression, row.CallChain, row.Notes
             ]).ToArray()),
 
             new("sql-snippets",
             [
                 "SqlId", "SourceFile", "Line", "Column", "ContainingSymbol", "SqlExecutionMethod", "Confidence",
-                "SqlText", "NormalizedSqlText", "CallChain", "Notes"
+                "ExecutionSourceFile", "ExecutionLine", "ExecutionColumn", "SqlText", "NormalizedSqlText", "CallChain", "Notes"
             ], result.SqlSnippets.Select(row => (IReadOnlyList<string>)
             [
                 row.SqlId, row.SourceFile, row.Line.ToString(), row.Column.ToString(), row.ContainingSymbol,
-                row.SqlExecutionMethod, row.Confidence, row.SqlText, row.NormalizedSqlText, row.CallChain, row.Notes
+                row.SqlExecutionMethod, row.Confidence, row.SourceFile, row.Line.ToString(), row.Column.ToString(),
+                row.SqlText, row.NormalizedSqlText, row.CallChain, row.Notes
             ]).ToArray()),
 
             new("warnings",

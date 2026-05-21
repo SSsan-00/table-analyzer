@@ -35,6 +35,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves configured sql execution method", Tests.AnalyzerResolvesConfiguredSqlExecutionMethod),
     ("analyzer resolves configured sql argument index", Tests.AnalyzerResolvesConfiguredSqlArgumentIndex),
     ("analyzer auto detects configured sql argument", Tests.AnalyzerAutoDetectsConfiguredSqlArgument),
+    ("analyzer records unresolved likely sql argument for auto detected method", Tests.AnalyzerRecordsUnresolvedLikelySqlArgumentForAutoDetectedMethod),
+    ("analyzer keeps sql snippet when auto detected sql has no objects", Tests.AnalyzerKeepsSqlSnippetWhenAutoDetectedSqlHasNoObjects),
     ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
     ("analyzer resolves mixed named caller argument into sql wrapper", Tests.AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper),
     ("analyzer resolves caller argument into context sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoContextSqlWrapper),
@@ -840,6 +842,54 @@ internal static class Tests
         Assert.Equal("DELETE", result.TableUsages[0].Operation);
     }
 
+    public static void AnalyzerRecordsUnresolvedLikelySqlArgumentForAutoDetectedMethod()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CustomDbService.cs", """
+            class CustomDbService
+            {
+                void Run(string connectionName, string sql)
+                {
+                    db.ExecDb(connectionName);
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CustomDbService.cs")], configuration);
+
+        Assert.Equal(0, result.TableUsages.Count);
+        Assert.Single(result.UnresolvedSql);
+        Assert.Single(result.SqlSnippets);
+        Assert.Equal("sql", result.UnresolvedSql[0].Expression);
+        Assert.Equal(6, result.UnresolvedSql[0].Line);
+    }
+
+    public static void AnalyzerKeepsSqlSnippetWhenAutoDetectedSqlHasNoObjects()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CustomDbService.cs", """
+            class CustomDbService
+            {
+                void Run()
+                {
+                    db.ExecDb("SELECT 1");
+                }
+            }
+            """);
+        var configuration = ConfigurationWithAutoMethod("ExecDb");
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CustomDbService.cs")], configuration);
+
+        Assert.Equal(0, result.TableUsages.Count);
+        Assert.Single(result.UnresolvedSql);
+        Assert.Single(result.SqlSnippets);
+        Assert.Equal("NoSqlObjectsFound", result.UnresolvedSql[0].Reason);
+        Assert.Equal("SELECT 1", result.SqlSnippets[0].SqlText);
+        Assert.Equal(5, result.SqlSnippets[0].Line);
+    }
+
     public static void AnalyzerResolvesCallerArgumentIntoSqlWrapper()
     {
         using var temp = TempWorkspace.Create();
@@ -1284,6 +1334,7 @@ internal static class Tests
         Assert.Equal(0xBF, bytes[2]);
 
         var lines = File.ReadAllLines(Path.Combine(temp.Root, "table-usages.csv"), Encoding.UTF8);
+        Assert.Contains(lines[0], "ExecutionSourceFile,ExecutionLine,ExecutionColumn");
         Assert.True(lines[0].EndsWith(",SqlText", StringComparison.Ordinal), lines[0]);
         Assert.True(lines[1].EndsWith(",SELECT * FROM dbo.Users", StringComparison.Ordinal), lines[1]);
     }

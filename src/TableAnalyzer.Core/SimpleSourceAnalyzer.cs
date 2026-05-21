@@ -151,7 +151,8 @@ public sealed class SimpleSourceAnalyzer
 
             if (evaluated.Candidates.Count == 0)
             {
-                if (invocation.AutoDetectSqlArgument)
+                if (invocation.AutoDetectSqlArgument &&
+                    !LooksLikeSqlCarrier(invocation.SqlExpression, invocation.ArgumentName))
                 {
                     continue;
                 }
@@ -287,15 +288,47 @@ public sealed class SimpleSourceAnalyzer
             }
 
             var objects = SqlObjectExtractor.Extract(candidate);
-            if (objects.Count == 0 && onlySqlObjects)
-            {
-                continue;
-            }
-
             candidates.Add(new SqlCandidate(candidate, objects));
         }
 
         return candidates;
+    }
+
+    private static bool LooksLikeSqlCarrier(ExpressionSyntax expression, string argumentName)
+    {
+        if (LooksLikeSqlCarrierName(argumentName))
+        {
+            return true;
+        }
+
+        return expression switch
+        {
+            IdentifierNameSyntax identifier => LooksLikeSqlCarrierName(identifier.Identifier.ValueText),
+            MemberAccessExpressionSyntax memberAccess => LooksLikeSqlCarrierName(memberAccess.Name.Identifier.ValueText),
+            ConditionalAccessExpressionSyntax conditionalAccess => LooksLikeSqlCarrier(conditionalAccess.WhenNotNull, argumentName),
+            InvocationExpressionSyntax invocation => LooksLikeSqlCarrierName(GetCallableName(invocation.Expression) ?? ""),
+            _ => false
+        };
+    }
+
+    private static bool LooksLikeSqlCarrierName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var normalized = name.Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
+        if (normalized.Contains("connection", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return normalized.Contains("sql", StringComparison.Ordinal) ||
+               normalized.Contains("query", StringComparison.Ordinal) ||
+               normalized.Contains("commandtext", StringComparison.Ordinal) ||
+               normalized.Contains("cmdtext", StringComparison.Ordinal) ||
+               normalized.Contains("statement", StringComparison.Ordinal);
     }
 
     private static bool LooksLikeSqlStatement(string sql)
@@ -358,11 +391,24 @@ public sealed class SimpleSourceAnalyzer
             if (spec.AutoDetectSqlArgument)
             {
                 invocations.AddRange(invocation.ArgumentList.Arguments
-                    .Select(argument => new SqlInvocation(methodName, argument.Expression, invocation, sourceFile, AutoDetectSqlArgument: true)));
+                    .Select(argument => new SqlInvocation(
+                        methodName,
+                        argument.Expression,
+                        invocation,
+                        sourceFile,
+                        GetArgumentName(argument),
+                        AutoDetectSqlArgument: true)));
                 continue;
             }
 
-            invocations.Add(new SqlInvocation(methodName, invocation.ArgumentList.Arguments[spec.SqlArgumentIndex].Expression, invocation, sourceFile, AutoDetectSqlArgument: false));
+            var sqlArgument = invocation.ArgumentList.Arguments[spec.SqlArgumentIndex];
+            invocations.Add(new SqlInvocation(
+                methodName,
+                sqlArgument.Expression,
+                invocation,
+                sourceFile,
+                GetArgumentName(sqlArgument),
+                AutoDetectSqlArgument: false));
         }
 
         foreach (var creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
@@ -374,10 +420,22 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            invocations.Add(new SqlInvocation(typeName, creation.ArgumentList.Arguments[spec.SqlArgumentIndex].Expression, creation, sourceFile, AutoDetectSqlArgument: false));
+            var sqlArgument = creation.ArgumentList.Arguments[spec.SqlArgumentIndex];
+            invocations.Add(new SqlInvocation(
+                typeName,
+                sqlArgument.Expression,
+                creation,
+                sourceFile,
+                GetArgumentName(sqlArgument),
+                AutoDetectSqlArgument: false));
         }
 
         return invocations;
+    }
+
+    private static string GetArgumentName(ArgumentSyntax argument)
+    {
+        return argument.NameColon?.Name.Identifier.ValueText ?? "";
     }
 
     private static SqlExecutionMethodSpec? ResolveSqlExecutionInvocation(
@@ -588,7 +646,13 @@ public sealed class SimpleSourceAnalyzer
 
     private sealed record SqlCandidate(string Sql, IReadOnlyList<SqlObject> Objects);
 
-    private sealed record SqlInvocation(string MethodName, ExpressionSyntax SqlExpression, SyntaxNode Syntax, SourceFile SourceFile, bool AutoDetectSqlArgument);
+    private sealed record SqlInvocation(
+        string MethodName,
+        ExpressionSyntax SqlExpression,
+        SyntaxNode Syntax,
+        SourceFile SourceFile,
+        string ArgumentName,
+        bool AutoDetectSqlArgument);
 
     private sealed record ReachableSqlInvocations(
         IReadOnlyList<SqlInvocation> Invocations,

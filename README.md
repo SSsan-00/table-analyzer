@@ -28,6 +28,7 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - 変数のシンボル一致、完全な `if/else` 上書き、`return` / `throw` 枝を考慮して過剰候補を抑制
 - T-SQL ASTから `SELECT` / `JOIN` / `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `EXEC` の対象を抽出
 - 動的テーブル名の `{table}` 形式プレースホルダを保持したままT-SQL AST解析
+- SQL実行メソッドの実行箇所を `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` として出力
 - UTF-8 / Shift-JIS(CP932) のソースを読み取り
 - 出力形式は CSV または XLSX を選択可能。CSVは UTF-8 BOM付きで出力
 
@@ -66,7 +67,7 @@ RunSql
 SearchUsers
 ```
 
-引数位置の指定は不要です。ツール側で全引数を評価し、T-SQLとしてテーブルを抽出できる引数をSQL候補として採用します。
+引数位置の指定は不要です。ツール側で全引数を評価し、T-SQLとしてテーブルを抽出できる引数をSQL候補として採用します。`sql`、`query`、`commandText` のようなSQLを保持していそうな引数や変数が未解決の場合は、見落とし確認用に `unresolved-sql` に出力します。
 
 指定したメソッドは受信オブジェクトの型を問わずSQL実行候補として扱います。`db.ExecDb(sql)`、`SqlHelper.ExecDb(sql)`、同一クラス内の `ExecDb(sql)` のような独自ラッパーを対象にできます。指定メソッドを内部で呼ぶメソッドについては、呼び出し元の実引数を仮引数に流して再評価します。
 
@@ -171,11 +172,11 @@ C:\work\table-analysis\20260512-143012_Pages\
 CSV形式を選んだ場合:
 
 ```text
-table-usages.csv      SQL内のテーブル/ビュー/Procedure出現ごとの詳細。最後尾にSQL全文を出力
+table-usages.csv      SQL内のテーブル/ビュー/Procedure出現ごとの詳細。実行箇所とSQL全文を出力
 table-summary.csv     FullName単位の集計
 dynamic-sql.csv       動的SQLや候補展開の詳細
 unresolved-sql.csv    SQL文字列やテーブル名を解決できなかった箇所
-sql-snippets.csv      SQL本文と正規化SQL
+sql-snippets.csv      SQL本文、正規化SQL、実行箇所
 warnings.csv          読み込み失敗などの警告
 run-summary.txt       実行サマリ
 ```
@@ -185,6 +186,20 @@ XLSX形式を選んだ場合:
 ```text
 table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 ```
+
+`table-usages` と `sql-snippets` の `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` は、SQL実行メソッド呼び出しの位置です。既存互換のため `SourceFile` / `Line` / `Column` も同じ位置を保持しています。
+
+## ヒット件数が少ないとき
+
+まず `sql-snippets`、`unresolved-sql`、`warnings` を確認してください。
+
+- `sql-snippets` が少ない: SQL実行メソッドとして検出できていません。GUIの「解析対象メソッド」に独自DBラッパー名を追加してください。
+- `unresolved-sql` が多い: 実行箇所は検出できていますが、SQL文字列やテーブル名を静的に確定できていません。
+- `warnings` がある: ファイル読み込みや構文解析で除外されたファイルがあります。
+- 解析対象ファイルを指定している: そのファイルから到達できる呼び出しを中心に解析します。別ファイル単体で実行されるSQLも拾う場合は、解析対象ファイルを省略してフォルダ全体を解析してください。
+- 対象外拡張子や除外フォルダにSQLがある: 既定では `.cs` / `.cshtml.cs` を解析し、`bin`、`obj`、`Migrations` などは除外します。
+
+静的解析のため、外部ライブラリ内部、DB設定値、環境変数、実行時に組み立てられる値は完全には確定できません。その場合も、実行箇所を検出できたものは `unresolved-sql` に残す方針です。
 
 ## `INSERT ... SELECT` の出力
 
