@@ -22,8 +22,6 @@ internal sealed class MainForm : Form
     private readonly PathInputRow _analysisFileRow;
     private readonly PathInputRow _outputRootRow;
     private readonly ComboBox _outputFormatComboBox = new();
-    private readonly TextBox _customSqlMethodsTextBox = new();
-    private readonly Button _clearCustomSqlMethodsButton = new();
     private readonly Button _runButton = new();
     private readonly Button _openReportButton = new();
     private readonly ProgressBar _progressBar = new();
@@ -43,7 +41,6 @@ internal sealed class MainForm : Form
         _analysisFileRow = PathInputRow.ForFile("解析対象ファイル", settings.AnalysisFile);
         _outputRootRow = PathInputRow.ForFolder("出力先フォルダ", settings.OutputRoot);
         ConfigureOutputFormat(settings.OutputFormat);
-        ConfigureCustomSqlMethods(settings.CustomSqlExecutionMethods);
 
         _projectFolderRow.PathSelected += path =>
         {
@@ -120,22 +117,6 @@ internal sealed class MainForm : Form
         _resultTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
     }
 
-    private void ConfigureCustomSqlMethods(string value)
-    {
-        _customSqlMethodsTextBox.Text = value;
-        _customSqlMethodsTextBox.Dock = DockStyle.Fill;
-        _customSqlMethodsTextBox.Multiline = true;
-        _customSqlMethodsTextBox.ScrollBars = ScrollBars.Vertical;
-        _customSqlMethodsTextBox.AcceptsReturn = true;
-        _customSqlMethodsTextBox.PlaceholderText = "例: ExecDb";
-        _customSqlMethodsTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
-        _customSqlMethodsTextBox.Height = 68;
-
-        _clearCustomSqlMethodsButton.Text = "クリア";
-        _clearCustomSqlMethodsButton.Dock = DockStyle.Fill;
-        _clearCustomSqlMethodsButton.Click += (_, _) => _customSqlMethodsTextBox.Clear();
-    }
-
     private void BuildLayout()
     {
         var root = new TableLayoutPanel
@@ -161,13 +142,11 @@ internal sealed class MainForm : Form
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.Controls.Add(_projectFolderRow, 0, 0);
         inputPanel.Controls.Add(_analysisFolderRow, 0, 1);
         inputPanel.Controls.Add(_analysisFileRow, 0, 2);
         inputPanel.Controls.Add(_outputRootRow, 0, 3);
         inputPanel.Controls.Add(BuildOutputFormatRow(), 0, 4);
-        inputPanel.Controls.Add(BuildCustomSqlMethodsRow(), 0, 5);
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -214,11 +193,6 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (!TryBuildAnalyzerConfiguration(out var configuration))
-        {
-            return;
-        }
-
         SetBusy(true);
         _lastReportDirectory = "";
         _openReportButton.Enabled = false;
@@ -229,7 +203,7 @@ internal sealed class MainForm : Form
         var progress = new Progress<AnalysisProgress>(UpdateProgress);
         try
         {
-            var run = await Task.Run(() => new AnalysisRunner().Run(request, configuration, progress));
+            var run = await Task.Run(() => new AnalysisRunner().Run(request, new AnalyzerConfiguration(), progress));
             _lastReportDirectory = run.ReportDirectory;
             _openReportButton.Enabled = true;
             _progressBar.Value = 100;
@@ -288,8 +262,6 @@ internal sealed class MainForm : Form
         _analysisFileRow.Enabled = !busy;
         _outputRootRow.Enabled = !busy;
         _outputFormatComboBox.Enabled = !busy;
-        _customSqlMethodsTextBox.Enabled = !busy;
-        _clearCustomSqlMethodsButton.Enabled = !busy;
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
     }
 
@@ -314,8 +286,7 @@ internal sealed class MainForm : Form
             _analysisFolderRow.PathValue,
             _analysisFileRow.PathValue,
             _outputRootRow.PathValue,
-            _outputFormatComboBox.SelectedItem?.ToString() ?? "csv",
-            _customSqlMethodsTextBox.Text));
+            _outputFormatComboBox.SelectedItem?.ToString() ?? "csv"));
     }
 
     private static string BuildResultText(AnalysisRunResult run)
@@ -365,87 +336,6 @@ internal sealed class MainForm : Form
         return layout;
     }
 
-    private Control BuildCustomSqlMethodsRow()
-    {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnCount = 3,
-            RowCount = 1,
-            Padding = new Padding(0, 0, 0, 10)
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-
-        var label = new Label
-        {
-            Text = "解析対象メソッド",
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        };
-
-        layout.Controls.Add(label, 0, 0);
-        layout.Controls.Add(_customSqlMethodsTextBox, 1, 0);
-        layout.Controls.Add(_clearCustomSqlMethodsButton, 2, 0);
-        return layout;
-    }
-
-    private bool TryBuildAnalyzerConfiguration(out AnalyzerConfiguration configuration)
-    {
-        var baseConfiguration = new AnalyzerConfiguration();
-        if (!TryParseCustomSqlExecutionMethods(_customSqlMethodsTextBox.Text, out var customMethods, out var error))
-        {
-            configuration = baseConfiguration;
-            MessageBox.Show(this, error, "入力エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
-        }
-
-        configuration = new AnalyzerConfiguration
-        {
-            IncludeExtensions = baseConfiguration.IncludeExtensions,
-            ExcludeDirectoryNames = baseConfiguration.ExcludeDirectoryNames,
-            SqlExecutionMethods = baseConfiguration.SqlExecutionMethods.Concat(customMethods).ToArray(),
-            MaxCallDepth = baseConfiguration.MaxCallDepth,
-            MaxCandidatesPerExpression = baseConfiguration.MaxCandidatesPerExpression
-        };
-        return true;
-    }
-
-    private static bool TryParseCustomSqlExecutionMethods(
-        string text,
-        out IReadOnlyList<SqlExecutionMethodSpec> methods,
-        out string error)
-    {
-        var parsed = new List<SqlExecutionMethodSpec>();
-        var lines = text.ReplaceLineEndings("\n").Split('\n');
-
-        for (var index = 0; index < lines.Length; index++)
-        {
-            var line = lines[index].Trim();
-            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var methodName = line.Split(':', 2, StringSplitOptions.TrimEntries)[0];
-
-            if (string.IsNullOrWhiteSpace(methodName))
-            {
-                methods = [];
-                error = $"{index + 1}行目のメソッド名が空です。";
-                return false;
-            }
-
-            parsed.Add(new SqlExecutionMethodSpec(methodName, 0, AllowAnyReceiver: true, AutoDetectSqlArgument: true));
-        }
-
-        methods = parsed;
-        error = "";
-        return true;
-    }
 }
 
 internal sealed class PathInputRow : UserControl
@@ -586,8 +476,7 @@ internal sealed record GuiSettings(
     string AnalysisFolder = "",
     string AnalysisFile = "",
     string OutputRoot = "",
-    string OutputFormat = "csv",
-    string CustomSqlExecutionMethods = "");
+    string OutputFormat = "csv");
 
 internal static class GuiSettingsStore
 {

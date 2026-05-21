@@ -137,7 +137,7 @@ public sealed class SimpleSourceAnalyzer
         var reachable = FindReachableSqlInvocations(root, file, methods, configuration, semanticContext, sourceFilesByTree);
         var emittedSqlByMethod = new HashSet<string>(StringComparer.Ordinal);
         AnalyzeInvocations(reachable.Invocations, skipDuplicateSqlStrings: false);
-        AnalyzeInvocations(FindSqlStringInvocations(root, file), skipDuplicateSqlStrings: true);
+        AnalyzeInvocations(FindSqlStringInvocations(reachable.Methods, file, sourceFilesByTree), skipDuplicateSqlStrings: true);
 
         void AnalyzeInvocations(IEnumerable<SqlInvocation> invocations, bool skipDuplicateSqlStrings)
         {
@@ -309,69 +309,78 @@ public sealed class SimpleSourceAnalyzer
         return $"{invocation.Syntax.SyntaxTree.FilePath}:{invocation.Syntax.SpanStart}:{invocation.SqlExpression.SpanStart}";
     }
 
-    private static IReadOnlyList<SqlInvocation> FindSqlStringInvocations(SyntaxNode root, SourceFile sourceFile)
+    private static IReadOnlyList<SqlInvocation> FindSqlStringInvocations(
+        IEnumerable<MethodDeclarationSyntax> methods,
+        SourceFile rootSourceFile,
+        IReadOnlyDictionary<SyntaxTree, SourceFile> sourceFilesByTree)
     {
         var invocations = new List<SqlInvocation>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var variable in root.DescendantNodes().OfType<VariableDeclaratorSyntax>())
+        foreach (var method in methods)
         {
-            if (variable.Initializer?.Value is not null)
+            var sourceFile = sourceFilesByTree.TryGetValue(method.SyntaxTree, out var found)
+                ? found
+                : rootSourceFile;
+            foreach (var variable in method.DescendantNodes().OfType<VariableDeclaratorSyntax>())
             {
-                AddCandidate(variable.Initializer.Value, variable, variable.Identifier.ValueText);
-            }
-        }
-
-        foreach (var assignment in root.DescendantNodes().OfType<AssignmentExpressionSyntax>())
-        {
-            if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
-            {
-                AddCandidate(assignment.Right, assignment, GetAssignedName(assignment.Left));
-            }
-        }
-
-        foreach (var returnStatement in root.DescendantNodes().OfType<ReturnStatementSyntax>())
-        {
-            if (returnStatement.Expression is not null)
-            {
-                AddCandidate(returnStatement.Expression, returnStatement, "");
-            }
-        }
-
-        foreach (var arrowExpression in root.DescendantNodes().OfType<ArrowExpressionClauseSyntax>())
-        {
-            AddCandidate(arrowExpression.Expression, arrowExpression, "");
-        }
-
-        foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
-        {
-            if (IsStringConstructionInvocation(invocation))
-            {
-                continue;
+                if (variable.Initializer?.Value is not null)
+                {
+                    AddCandidate(variable.Initializer.Value, variable, variable.Identifier.ValueText, sourceFile);
+                }
             }
 
-            foreach (var argument in invocation.ArgumentList.Arguments)
+            foreach (var assignment in method.DescendantNodes().OfType<AssignmentExpressionSyntax>())
             {
-                AddCandidate(argument.Expression, invocation, GetArgumentName(argument));
-            }
-        }
-
-        foreach (var creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
-        {
-            if (creation.ArgumentList is null)
-            {
-                continue;
+                if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                {
+                    AddCandidate(assignment.Right, assignment, GetAssignedName(assignment.Left), sourceFile);
+                }
             }
 
-            foreach (var argument in creation.ArgumentList.Arguments)
+            foreach (var returnStatement in method.DescendantNodes().OfType<ReturnStatementSyntax>())
             {
-                AddCandidate(argument.Expression, creation, GetArgumentName(argument));
+                if (returnStatement.Expression is not null)
+                {
+                    AddCandidate(returnStatement.Expression, returnStatement, "", sourceFile);
+                }
+            }
+
+            foreach (var arrowExpression in method.DescendantNodes().OfType<ArrowExpressionClauseSyntax>())
+            {
+                AddCandidate(arrowExpression.Expression, arrowExpression, "", sourceFile);
+            }
+
+            foreach (var invocation in method.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (IsStringConstructionInvocation(invocation))
+                {
+                    continue;
+                }
+
+                foreach (var argument in invocation.ArgumentList.Arguments)
+                {
+                    AddCandidate(argument.Expression, invocation, GetArgumentName(argument), sourceFile);
+                }
+            }
+
+            foreach (var creation in method.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+            {
+                if (creation.ArgumentList is null)
+                {
+                    continue;
+                }
+
+                foreach (var argument in creation.ArgumentList.Arguments)
+                {
+                    AddCandidate(argument.Expression, creation, GetArgumentName(argument), sourceFile);
+                }
             }
         }
 
         return invocations;
 
-        void AddCandidate(ExpressionSyntax expression, SyntaxNode syntax, string contextName)
+        void AddCandidate(ExpressionSyntax expression, SyntaxNode syntax, string contextName, SourceFile sourceFile)
         {
             if (!ShouldCollectSqlStringExpression(expression, contextName))
             {

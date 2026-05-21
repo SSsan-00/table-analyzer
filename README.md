@@ -17,8 +17,7 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - 単一ファイルだけを指定して解析
 - 解析対象外のプロジェクト内ファイルにある helper メソッドの戻り値をリンクして解析
 - `using` / namespace / overload を考慮して helper メソッド呼び出しを優先解決
-- SQL実行メソッドの引数からSQL文字列を追跡
-- GUIで追加した独自メソッドは引数位置指定なしでSQL候補を自動判定
+- SQL実行メソッドの引数やソース中で構築されたSQL文字列候補を追跡
 - SQL実行メソッドを内部で呼ぶメソッドは、呼び出し元の実引数を仮引数へ流して再評価
 - SQL実行メソッド検出では、SemanticModelで解決できる非SQLの通常メソッド呼び出しを除外
 - 実行メソッド指定に依存せず、ソース中で構築されたSQLらしい文字列も `SqlString` として解析
@@ -57,25 +56,10 @@ dotnet run --project src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj
 - 解析対象ファイル: 任意。指定した場合はこの1ファイルだけ解析
 - 出力先フォルダ: レポートの出力先
 - 出力形式: `csv` または `xlsx`
-- 解析対象メソッド: 任意。独自DBラッパーのメソッド名を1行1件で指定
 
 各パスは `選択` ボタンでフォルダ/ファイル選択できます。各入力欄の `クリア` ボタンで空に戻せます。テキストボックスへのドラッグ&ドロップにも対応しています。
 
-解析対象メソッドは、メソッド名のみを次の形式で指定します。
-
-```text
-ExecDb
-RunSql
-SearchUsers
-```
-
-引数位置の指定は不要です。ツール側で全引数を評価し、T-SQLとしてテーブルを抽出できる引数をSQL候補として採用します。`sql`、`query`、`commandText` のようなSQLを保持していそうな引数や変数が未解決の場合は、見落とし確認用に `unresolved-sql` に出力します。
-
-指定したメソッドは受信オブジェクトの型を問わずSQL実行候補として扱います。`db.ExecDb(sql)`、`SqlHelper.ExecDb(sql)`、同一クラス内の `ExecDb(sql)` のような独自ラッパーを対象にできます。指定メソッドを内部で呼ぶメソッドについては、呼び出し元の実引数を仮引数に流して再評価します。
-
-例えば `SearchUsers("Users")` が `SearchUsers(string table)` 内で `db.ExecDb("SELECT * FROM dbo." + table)` を呼ぶ場合、`table = "Users"` として解析し、`dbo.Users` を出力します。候補が複数ある場合は複数行、実行時値が残る場合は `{table}` のような動的候補として出力します。
-
-漏れ防止のため、解析対象メソッドに指定していない呼び出しでも、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQLらしい文字列が構築されていれば `SqlExecutionMethod=SqlString` として解析します。実行確定ではなく「SQL文字列候補」ですが、CRUDサマリにも反映します。
+実行メソッドの指定は不要です。漏れ防止のため、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQLらしい文字列が構築されていれば `SqlExecutionMethod=SqlString` として解析します。別メソッドや別ファイルの呼び出し先にも到達できる場合は、呼び出し元の実引数を仮引数へ流して再評価します。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 
@@ -193,7 +177,7 @@ XLSX形式を選んだ場合:
 table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 ```
 
-`table-usages` と `sql-snippets` の `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` は、SQL実行メソッド呼び出しの位置です。既存互換のため `SourceFile` / `Line` / `Column` も同じ位置を保持しています。
+`table-usages` と `sql-snippets` の `ExecutionSourceFile` / `ExecutionLine` / `ExecutionColumn` は、SQL実行メソッド呼び出しまたはSQL文字列候補を検出した位置です。既存互換のため `SourceFile` / `Line` / `Column` も同じ位置を保持しています。
 
 `query-crud-summary` は `SqlId` 単位で、1つのSQL文字列がどのテーブルを `Create` / `Read` / `Update` / `Delete` するかを出力します。`source-crud-summary` は `SourceFile` 単位で集計し、そのソースファイルの機能をCRUD視点で確認できるようにします。`MERGE` と `EXEC` はCRUDに単純分類しきれないため、`MergeTables` / `ExecuteProcedures` として別列にも出力します。
 
@@ -201,7 +185,7 @@ table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 
 まず `sql-snippets`、`unresolved-sql`、`warnings` を確認してください。
 
-- `sql-snippets` が少ない: SQL文字列の構築自体を検出できていない可能性があります。GUIの「解析対象メソッド」に独自DBラッパー名を追加すると、引数名や未解決値も手掛かりにできます。
+- `sql-snippets` が少ない: SQL文字列の構築自体を検出できていない可能性があります。解析対象ファイルを指定している場合は、解析対象ファイルを省略してフォルダ全体を解析してください。
 - `unresolved-sql` が多い: 実行箇所は検出できていますが、SQL文字列やテーブル名を静的に確定できていません。
 - `warnings` がある: ファイル読み込みや構文解析で除外されたファイルがあります。
 - 解析対象ファイルを指定している: そのファイルから到達できる呼び出しを中心に解析します。別ファイル単体で実行されるSQLも拾う場合は、解析対象ファイルを省略してフォルダ全体を解析してください。

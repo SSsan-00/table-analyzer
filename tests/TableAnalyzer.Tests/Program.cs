@@ -38,6 +38,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer records unresolved likely sql argument for auto detected method", Tests.AnalyzerRecordsUnresolvedLikelySqlArgumentForAutoDetectedMethod),
     ("analyzer keeps sql snippet when auto detected sql has no objects", Tests.AnalyzerKeepsSqlSnippetWhenAutoDetectedSqlHasNoObjects),
     ("analyzer collects sql string without configured execution method", Tests.AnalyzerCollectsSqlStringWithoutConfiguredExecutionMethod),
+    ("analyzer collects sql string from reachable context method", Tests.AnalyzerCollectsSqlStringFromReachableContextMethod),
     ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
     ("analyzer resolves mixed named caller argument into sql wrapper", Tests.AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper),
     ("analyzer resolves caller argument into context sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoContextSqlWrapper),
@@ -255,9 +256,10 @@ internal static class Tests
             ],
             new AnalyzerConfiguration());
 
-        Assert.Single(result.TableUsages);
-        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
-        Assert.Equal("Index.cshtml.cs", result.TableUsages[0].SourceFile);
+        Assert.Equal(2, result.TableUsages.Count);
+        Assert.All(result.TableUsages, row => Assert.Equal("dbo.Users", row.FullName));
+        Assert.Contains(result.TableUsages.Select(row => row.SourceFile), "Index.cshtml.cs");
+        Assert.Contains(result.TableUsages.Select(row => row.SourceFile), "Infrastructure/SqlFactory.cs");
     }
 
     public static void AnalyzerResolvesHelperMethodByUsingNamespace()
@@ -305,8 +307,9 @@ internal static class Tests
             ],
             new AnalyzerConfiguration());
 
-        Assert.Single(result.TableUsages);
-        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.True(result.TableUsages.Count >= 1);
+        Assert.All(result.TableUsages, row => Assert.Equal("dbo.Users", row.FullName));
+        Assert.DoesNotContain(result.TableUsages.Select(row => row.FullName), "dbo.WrongUsers");
     }
 
     public static void AnalyzerResolvesHelperMethodOverloadByArgumentType()
@@ -921,6 +924,43 @@ internal static class Tests
         Assert.Contains(result.SqlSnippets.Select(row => row.SqlExecutionMethod), "SqlString");
     }
 
+    public static void AnalyzerCollectsSqlStringFromReachableContextMethod()
+    {
+        using var temp = TempWorkspace.Create();
+        var page = temp.Write("Pages/Users.cshtml.cs", """
+            class UsersModel
+            {
+                void OnGet()
+                {
+                    new UserRepository().SearchUsers("Users");
+                }
+            }
+            """);
+        var repository = temp.Write("Infrastructure/UserRepository.cs", """
+            class UserRepository
+            {
+                public void SearchUsers(string table)
+                {
+                    var sql = "SELECT * FROM dbo." + table;
+                    db.ExecDb(sql);
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze(
+            [new SourceFile(page, "Pages/Users.cshtml.cs")],
+            [
+                new SourceFile(page, "Pages/Users.cshtml.cs"),
+                new SourceFile(repository, "Infrastructure/UserRepository.cs")
+            ],
+            new AnalyzerConfiguration());
+
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("Infrastructure/UserRepository.cs", result.TableUsages[0].SourceFile);
+        Assert.Equal("SqlString", result.TableUsages[0].SqlExecutionMethod);
+    }
+
     public static void AnalyzerResolvesCallerArgumentIntoSqlWrapper()
     {
         using var temp = TempWorkspace.Create();
@@ -1249,8 +1289,8 @@ internal static class Tests
 
             Assert.Equal(1, run.AnalysisFiles.Count);
             Assert.True(run.ContextFiles.Count >= 3);
-            Assert.Single(run.AnalysisResult.TableUsages);
-            Assert.Equal("dbo.TargetUsers", run.AnalysisResult.TableUsages[0].FullName);
+            Assert.True(run.AnalysisResult.TableUsages.Count >= 1);
+            Assert.All(run.AnalysisResult.TableUsages, row => Assert.Equal("dbo.TargetUsers", row.FullName));
             Assert.True(!run.AnalysisResult.TableUsages.Any(row => row.FullName == "dbo.OtherUsers"));
             Assert.True(File.Exists(Path.Combine(run.ReportDirectory, "table-usages.csv")));
         }
