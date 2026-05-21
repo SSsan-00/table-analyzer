@@ -1444,6 +1444,24 @@ public sealed class SimpleSourceAnalyzer
                 }
             }
 
+            if (memberAccess.Expression is ElementAccessExpressionSyntax elementAccess)
+            {
+                var memberExpressions = FindElementMemberValues(
+                    scope,
+                    elementAccess,
+                    memberAccess.Name.Identifier.ValueText,
+                    memberAccess.SpanStart,
+                    parameters,
+                    depth,
+                    activeMethods);
+                if (memberExpressions.Count > 0)
+                {
+                    return CombineAlternatives(
+                        memberExpressions.Select(expression => Evaluate(expression, scope, parameters, depth, activeMethods)).ToArray(),
+                        memberAccess.ToString());
+                }
+            }
+
             if (TryEvaluateSymbol(memberAccess, scope, parameters, depth, activeMethods, out var symbolValue))
             {
                 return symbolValue;
@@ -1517,6 +1535,58 @@ public sealed class SimpleSourceAnalyzer
                 : GetInitializerElementValues(lastInitializer.Initializer, keys, scope, parameters, depth, activeMethods);
         }
 
+        private IReadOnlyList<ExpressionSyntax> FindElementMemberValues(
+            MethodDeclarationSyntax? scope,
+            ElementAccessExpressionSyntax elementAccess,
+            string memberName,
+            int beforePosition,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            if (scope?.Body is null || elementAccess.ArgumentList.Arguments.Count == 0)
+            {
+                return [];
+            }
+
+            var targetSymbol = GetSymbol(elementAccess.Expression);
+            if (targetSymbol is null)
+            {
+                return [];
+            }
+
+            var keys = GetIndexKeys(elementAccess.ArgumentList.Arguments[0].Expression, scope, parameters, depth, activeMethods);
+            if (keys.Count == 0)
+            {
+                return [];
+            }
+
+            var initializers = FindCollectionInitializers(scope.Body, targetSymbol, beforePosition);
+            var afterPosition = initializers
+                .OrderBy(initializer => initializer.Position)
+                .LastOrDefault()
+                ?.Position ?? int.MinValue;
+
+            var assignedMembers = FindElementMemberAssignments(
+                scope.Body,
+                targetSymbol,
+                keys,
+                memberName,
+                afterPosition,
+                beforePosition,
+                scope,
+                parameters,
+                depth,
+                activeMethods);
+            if (assignedMembers.Count > 0)
+            {
+                return DistinctExpressionValues(assignedMembers.Select(assignment => assignment.Value));
+            }
+
+            var elementValues = FindElementValues(elementAccess, scope, parameters, depth, activeMethods);
+            return DistinctExpressionValues(elementValues.SelectMany(value => GetExpressionMemberValues(value, memberName, scope, beforePosition)));
+        }
+
         private IReadOnlyList<CollectionInitializer> FindCollectionInitializers(BlockSyntax body, ISymbol targetSymbol, int beforePosition)
         {
             var initializers = new List<CollectionInitializer>();
@@ -1557,6 +1627,32 @@ public sealed class SimpleSourceAnalyzer
                                item.SpanStart < beforePosition &&
                                item.IsKind(SyntaxKind.SimpleAssignmentExpression))
                 .Where(item => item.Left is ElementAccessExpressionSyntax leftAccess &&
+                               IsTargetReference(leftAccess.Expression, targetSymbol) &&
+                               IndexMatches(leftAccess.ArgumentList, keys, scope, parameters, depth, activeMethods))
+                .Select(item => new ElementAssignment(item.Right, item.SpanStart))
+                .OrderBy(item => item.Position)
+                .ToArray();
+        }
+
+        private IReadOnlyList<ElementAssignment> FindElementMemberAssignments(
+            BlockSyntax body,
+            ISymbol targetSymbol,
+            IReadOnlyList<string> keys,
+            string memberName,
+            int afterPosition,
+            int beforePosition,
+            MethodDeclarationSyntax? scope,
+            IReadOnlyDictionary<string, SymbolicValue> parameters,
+            int depth,
+            HashSet<string> activeMethods)
+        {
+            return body.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                .Where(item => item.SpanStart > afterPosition &&
+                               item.SpanStart < beforePosition &&
+                               item.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                .Where(item => item.Left is MemberAccessExpressionSyntax memberAccess &&
+                               string.Equals(memberAccess.Name.Identifier.ValueText, memberName, StringComparison.Ordinal) &&
+                               memberAccess.Expression is ElementAccessExpressionSyntax leftAccess &&
                                IsTargetReference(leftAccess.Expression, targetSymbol) &&
                                IndexMatches(leftAccess.ArgumentList, keys, scope, parameters, depth, activeMethods))
                 .Select(item => new ElementAssignment(item.Right, item.SpanStart))
@@ -1645,6 +1741,33 @@ public sealed class SimpleSourceAnalyzer
                     [implicitElementAccess.ArgumentList.Arguments[0].Expression],
                 _ => []
             };
+        }
+
+        private IReadOnlyList<ExpressionSyntax> GetExpressionMemberValues(
+            ExpressionSyntax expression,
+            string memberName,
+            MethodDeclarationSyntax? scope,
+            int beforePosition)
+        {
+            expression = Unwrap(expression);
+            switch (expression)
+            {
+                case ObjectCreationExpressionSyntax { Initializer: { } initializer }:
+                    return GetObjectInitializerMemberValues(initializer, memberName).ToArray();
+                case ImplicitObjectCreationExpressionSyntax { Initializer: { } initializer }:
+                    return GetObjectInitializerMemberValues(initializer, memberName).ToArray();
+                case IdentifierNameSyntax identifier:
+                    return FindObjectMemberValues(scope, identifier, memberName, beforePosition);
+                case ConditionalExpressionSyntax conditional:
+                    return DistinctExpressionValues(
+                        GetExpressionMemberValues(conditional.WhenTrue, memberName, scope, beforePosition)
+                            .Concat(GetExpressionMemberValues(conditional.WhenFalse, memberName, scope, beforePosition)));
+                case SwitchExpressionSyntax switchExpression:
+                    return DistinctExpressionValues(
+                        switchExpression.Arms.SelectMany(arm => GetExpressionMemberValues(arm.Expression, memberName, scope, beforePosition)));
+                default:
+                    return [];
+            }
         }
 
         private bool IndexMatches(
@@ -2977,6 +3100,12 @@ public sealed class SimpleSourceAnalyzer
         private static class PlaceholderSqlNormalizer
         {
             private static readonly Regex PlaceholderPattern = new(@"\{[^}]+\}", RegexOptions.Compiled);
+            private static readonly Regex PredicatePlaceholderPattern = new(
+                @"\b(WHERE|ON|AND|OR)\s+(__ta_dynamic_\d+__)(?=\s*(?:ORDER|GROUP|HAVING|OPTION|FOR|UNION|EXCEPT|INTERSECT|AND|OR|\)|;|$))",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            private static readonly Regex ParenthesizedPredicatePlaceholderPattern = new(
+                @"\b(WHERE|ON|AND|OR)\s*\(\s*(__ta_dynamic_\d+__)\s*\)(?=\s*(?:ORDER|GROUP|HAVING|OPTION|FOR|UNION|EXCEPT|INTERSECT|AND|OR|\)|;|$))",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
             public static NormalizedSql Normalize(string sql)
             {
@@ -2988,8 +3117,15 @@ public sealed class SimpleSourceAnalyzer
                     replacements[token] = match.Value;
                     return token;
                 });
+                normalized = NormalizePredicatePlaceholders(normalized);
 
                 return new NormalizedSql(normalized, replacements);
+            }
+
+            private static string NormalizePredicatePlaceholders(string sql)
+            {
+                sql = ParenthesizedPredicatePlaceholderPattern.Replace(sql, match => $"{match.Groups[1].Value} (1 = 1)");
+                return PredicatePlaceholderPattern.Replace(sql, match => $"{match.Groups[1].Value} 1 = 1");
             }
         }
     }

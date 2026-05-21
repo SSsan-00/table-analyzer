@@ -42,6 +42,9 @@ var tests = new (string Name, Action Body)[]
     ("analyzer resolves array indexer sql", Tests.AnalyzerResolvesArrayIndexerSql),
     ("analyzer resolves dictionary indexer sql", Tests.AnalyzerResolvesDictionaryIndexerSql),
     ("analyzer resolves dictionary initializer indexer sql", Tests.AnalyzerResolvesDictionaryInitializerIndexerSql),
+    ("analyzer resolves array element member sql", Tests.AnalyzerResolvesArrayElementMemberSql),
+    ("analyzer resolves dictionary element member sql", Tests.AnalyzerResolvesDictionaryElementMemberSql),
+    ("analyzer keeps unresolved collection predicate parseable", Tests.AnalyzerKeepsUnresolvedCollectionPredicateParseable),
     ("analyzer collects sql string from reachable context method", Tests.AnalyzerCollectsSqlStringFromReachableContextMethod),
     ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
     ("analyzer resolves mixed named caller argument into sql wrapper", Tests.AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper),
@@ -1025,6 +1028,95 @@ internal static class Tests
         var queryUsages = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
         Assert.Single(queryUsages);
         Assert.Equal("dbo.Orders", queryUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesArrayElementMemberSql()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/ArrayElementMemberSqlService.cs", """
+            class ArrayElementMemberSqlService
+            {
+                void Run()
+                {
+                    var targets = new[]
+                    {
+                        new SqlTarget { Schema = "dbo", Table = "Users" },
+                        new SqlTarget { Schema = "dbo", Table = "Orders" }
+                    };
+                    db.Query("SELECT * FROM " + targets[1].Schema + "." + targets[1].Table);
+                }
+            }
+
+            class SqlTarget
+            {
+                public string Schema { get; set; }
+                public string Table { get; set; }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/ArrayElementMemberSqlService.cs")], new AnalyzerConfiguration());
+
+        var queryUsages = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
+        Assert.Single(queryUsages);
+        Assert.Equal("dbo.Orders", queryUsages[0].FullName);
+    }
+
+    public static void AnalyzerResolvesDictionaryElementMemberSql()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/DictionaryElementMemberSqlService.cs", """
+            using System.Collections.Generic;
+
+            class DictionaryElementMemberSqlService
+            {
+                void Run()
+                {
+                    var targets = new Dictionary<string, SqlTarget>
+                    {
+                        ["users"] = new SqlTarget { Table = "Users" },
+                        ["orders"] = new SqlTarget { Table = "Orders" }
+                    };
+                    db.Query("SELECT * FROM dbo." + targets["orders"].Table);
+                }
+            }
+
+            class SqlTarget
+            {
+                public string Table { get; set; }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/DictionaryElementMemberSqlService.cs")], new AnalyzerConfiguration());
+
+        var queryUsages = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
+        Assert.Single(queryUsages);
+        Assert.Equal("dbo.Orders", queryUsages[0].FullName);
+    }
+
+    public static void AnalyzerKeepsUnresolvedCollectionPredicateParseable()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/DynamicPredicateSqlService.cs", """
+            class DynamicPredicateSqlService
+            {
+                void Run()
+                {
+                    var filters = db.Query<SqlFilter>("SELECT Condition FROM dbo.SqlFilters");
+                    db.Query("SELECT * FROM dbo.Users WHERE " + filters[0].Condition + " ORDER BY Id");
+                }
+            }
+
+            class SqlFilter
+            {
+                public string Condition { get; set; }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/DynamicPredicateSqlService.cs")], new AnalyzerConfiguration());
+
+        var usersUsage = result.TableUsages.Single(row => row.FullName == "dbo.Users");
+        Assert.Equal("dynamic", usersUsage.Confidence);
+        Assert.Contains(result.SqlSnippets.Select(row => row.SqlText), "SELECT * FROM dbo.Users WHERE {filters[0].Condition} ORDER BY Id");
     }
 
     public static void AnalyzerCollectsSqlStringFromReachableContextMethod()
