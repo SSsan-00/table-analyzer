@@ -29,8 +29,8 @@ internal sealed class MainForm : Form
     private readonly Label _progressLabel = new();
     private readonly TextBox _resultTextBox = new();
     private string _lastReportDirectory = "";
-    private const string TargetOnlyScopeLabel = "指定範囲のみ";
-    private const string RelatedFilesScopeLabel = "関連ファイルも再帰";
+    private const string TargetOnlyScopeLabel = "対象ファイルのみ解析";
+    private const string RelatedFilesScopeLabel = "関連ファイルも再帰的に解析";
 
     public MainForm()
     {
