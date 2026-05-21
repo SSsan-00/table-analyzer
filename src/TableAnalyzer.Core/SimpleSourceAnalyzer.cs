@@ -135,93 +135,125 @@ public sealed class SimpleSourceAnalyzer
         IdSequence ids)
     {
         var reachable = FindReachableSqlInvocations(root, file, methods, configuration, semanticContext, sourceFilesByTree);
-        foreach (var invocation in reachable.Invocations
-                     .OrderBy(invocation => invocation.SourceFile.RelativePath, StringComparer.OrdinalIgnoreCase)
-                     .ThenBy(invocation => invocation.Syntax.SpanStart))
+        var emittedSqlByMethod = new HashSet<string>(StringComparer.Ordinal);
+        AnalyzeInvocations(reachable.Invocations, skipDuplicateSqlStrings: false);
+        AnalyzeInvocations(FindSqlStringInvocations(root, file), skipDuplicateSqlStrings: true);
+
+        void AnalyzeInvocations(IEnumerable<SqlInvocation> invocations, bool skipDuplicateSqlStrings)
         {
-            var sqlId = ids.NextSqlId();
-            var location = GetLocation(invocation.Syntax);
-            var containingMethod = invocation.Syntax.FirstAncestorOrSelf<MethodDeclarationSyntax>();
-            var containingSymbol = GetContainingSymbol(containingMethod);
-            var sourceFile = invocation.SourceFile;
-            var parameterContexts = containingMethod is null
-                ? [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)]
-                : callContexts.GetParameterContexts(containingMethod, reachable.Methods);
-            var evaluated = evaluator.Evaluate(invocation.SqlExpression, containingMethod, parameterContexts);
-
-            if (evaluated.Candidates.Count == 0)
+            foreach (var invocation in invocations
+                         .OrderBy(invocation => invocation.SourceFile.RelativePath, StringComparer.OrdinalIgnoreCase)
+                         .ThenBy(invocation => invocation.Syntax.SpanStart)
+                         .ThenBy(invocation => invocation.SqlExpression.SpanStart))
             {
-                if (invocation.AutoDetectSqlArgument &&
-                    !LooksLikeSqlCarrier(invocation.SqlExpression, invocation.ArgumentName))
+                var sqlId = ids.NextSqlId();
+                var location = GetLocation(invocation.Syntax);
+                var containingMethod = invocation.Syntax.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+                var containingSymbol = GetContainingSymbol(containingMethod);
+                var sourceFile = invocation.SourceFile;
+                var parameterContexts = containingMethod is null
+                    ? [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)]
+                    : callContexts.GetParameterContexts(containingMethod, reachable.Methods);
+                var evaluated = evaluator.Evaluate(invocation.SqlExpression, containingMethod, parameterContexts);
+
+                if (evaluated.Candidates.Count == 0)
+                {
+                    if ((invocation.AutoDetectSqlArgument || invocation.IsSqlStringCandidate) &&
+                        !LooksLikeSqlCarrier(invocation.SqlExpression, invocation.ArgumentName))
+                    {
+                        continue;
+                    }
+
+                    var pattern = string.IsNullOrEmpty(evaluated.Pattern) ? $"{{{invocation.SqlExpression}}}" : evaluated.Pattern;
+                    if (skipDuplicateSqlStrings && emittedSqlByMethod.Contains(CreateEmittedSqlKey(sourceFile, pattern)))
+                    {
+                        continue;
+                    }
+
+                    emittedSqlByMethod.Add(CreateEmittedSqlKey(sourceFile, pattern));
+                    result.UnresolvedSql.Add(new UnresolvedSqlRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "RuntimeValue", invocation.SqlExpression.ToString(), containingSymbol, evaluated.Notes));
+                    result.SqlSnippets.Add(new SqlSnippetRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "unknown", pattern, NormalizeSql(pattern), containingSymbol, evaluated.Notes));
+                    continue;
+                }
+
+                var candidates = BuildSqlCandidates(evaluated, invocation.AutoDetectSqlArgument);
+                if (candidates.Count == 0)
                 {
                     continue;
                 }
 
-                var pattern = string.IsNullOrEmpty(evaluated.Pattern) ? $"{{{invocation.SqlExpression}}}" : evaluated.Pattern;
-                result.UnresolvedSql.Add(new UnresolvedSqlRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "RuntimeValue", invocation.SqlExpression.ToString(), containingSymbol, evaluated.Notes));
-                result.SqlSnippets.Add(new SqlSnippetRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "unknown", pattern, NormalizeSql(pattern), containingSymbol, evaluated.Notes));
-                continue;
-            }
-
-            var candidates = BuildSqlCandidates(evaluated, invocation.AutoDetectSqlArgument);
-            if (candidates.Count == 0)
-            {
-                continue;
-            }
-
-            var confidence = DetermineConfidence(candidates.Select(candidate => candidate.Sql).ToArray(), evaluated.Confidence);
-            string candidateGroupId = "";
-            if (candidates.Count > 1 || confidence is "dynamic" or "unknown")
-            {
-                candidateGroupId = ids.NextCandidateGroupId();
-                result.DynamicSql.Add(new DynamicSqlRow(
-                    candidateGroupId,
-                    sourceFile.RelativePath,
-                    location.Line,
-                    containingSymbol,
-                    evaluated.Pattern,
-                    candidates.Count,
-                    string.Join("|", candidates.Select(candidate => candidate.Sql)),
-                    confidence,
-                    evaluated.ResolutionPath,
-                    evaluated.Notes));
-            }
-
-            foreach (var candidate in candidates)
-            {
-                var currentSqlId = candidates.Count == 1 ? sqlId : ids.NextSqlId();
-                result.SqlSnippets.Add(new SqlSnippetRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, confidence, candidate.Sql, NormalizeSql(candidate.Sql), containingSymbol, evaluated.Notes));
-
-                if (candidate.Objects.Count == 0)
+                if (skipDuplicateSqlStrings)
                 {
-                    result.UnresolvedSql.Add(new UnresolvedSqlRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "NoSqlObjectsFound", invocation.SqlExpression.ToString(), containingSymbol, ""));
-                    continue;
+                    candidates = candidates
+                        .Where(candidate => !emittedSqlByMethod.Contains(CreateEmittedSqlKey(sourceFile, candidate.Sql)))
+                        .ToArray();
+                    if (candidates.Count == 0)
+                    {
+                        continue;
+                    }
                 }
 
-                foreach (var sqlObject in candidate.Objects)
+                var confidence = DetermineConfidence(candidates.Select(candidate => candidate.Sql).ToArray(), evaluated.Confidence);
+                string candidateGroupId = "";
+                if (candidates.Count > 1 || confidence is "dynamic" or "unknown")
                 {
-                    result.TableUsages.Add(new TableUsageRow(
-                        ids.NextUsageId(),
-                        currentSqlId,
-                        sqlObject.ObjectType,
-                        sqlObject.ObjectName,
-                        sqlObject.FullName,
-                        sqlObject.Operation,
-                        sqlObject.SqlRole,
-                        confidence,
+                    candidateGroupId = ids.NextCandidateGroupId();
+                    result.DynamicSql.Add(new DynamicSqlRow(
+                        candidateGroupId,
                         sourceFile.RelativePath,
                         location.Line,
-                        location.Column,
                         containingSymbol,
-                        invocation.MethodName,
-                        containingSymbol,
-                        0,
-                        candidateGroupId.Length > 0 ? evaluated.Pattern : "",
-                        candidateGroupId,
+                        evaluated.Pattern,
+                        candidates.Count,
+                        string.Join("|", candidates.Select(candidate => candidate.Sql)),
+                        confidence,
+                        evaluated.ResolutionPath,
                         evaluated.Notes));
+                }
+
+                foreach (var candidate in candidates)
+                {
+                    emittedSqlByMethod.Add(CreateEmittedSqlKey(sourceFile, candidate.Sql));
+
+                    var currentSqlId = candidates.Count == 1 ? sqlId : ids.NextSqlId();
+                    result.SqlSnippets.Add(new SqlSnippetRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, confidence, candidate.Sql, NormalizeSql(candidate.Sql), containingSymbol, evaluated.Notes));
+
+                    if (candidate.Objects.Count == 0)
+                    {
+                        result.UnresolvedSql.Add(new UnresolvedSqlRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "NoSqlObjectsFound", invocation.SqlExpression.ToString(), containingSymbol, ""));
+                        continue;
+                    }
+
+                    foreach (var sqlObject in candidate.Objects)
+                    {
+                        result.TableUsages.Add(new TableUsageRow(
+                            ids.NextUsageId(),
+                            currentSqlId,
+                            sqlObject.ObjectType,
+                            sqlObject.ObjectName,
+                            sqlObject.FullName,
+                            sqlObject.Operation,
+                            sqlObject.SqlRole,
+                            confidence,
+                            sourceFile.RelativePath,
+                            location.Line,
+                            location.Column,
+                            containingSymbol,
+                            invocation.MethodName,
+                            containingSymbol,
+                            0,
+                            candidateGroupId.Length > 0 ? evaluated.Pattern : "",
+                            candidateGroupId,
+                            evaluated.Notes));
+                    }
                 }
             }
         }
+    }
+
+    private static string CreateEmittedSqlKey(SourceFile sourceFile, string sql)
+    {
+        return $"{sourceFile.RelativePath}\n{NormalizeSql(sql)}";
     }
 
     private static ReachableSqlInvocations FindReachableSqlInvocations(
@@ -277,6 +309,115 @@ public sealed class SimpleSourceAnalyzer
         return $"{invocation.Syntax.SyntaxTree.FilePath}:{invocation.Syntax.SpanStart}:{invocation.SqlExpression.SpanStart}";
     }
 
+    private static IReadOnlyList<SqlInvocation> FindSqlStringInvocations(SyntaxNode root, SourceFile sourceFile)
+    {
+        var invocations = new List<SqlInvocation>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var variable in root.DescendantNodes().OfType<VariableDeclaratorSyntax>())
+        {
+            if (variable.Initializer?.Value is not null)
+            {
+                AddCandidate(variable.Initializer.Value, variable, variable.Identifier.ValueText);
+            }
+        }
+
+        foreach (var assignment in root.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+            {
+                AddCandidate(assignment.Right, assignment, GetAssignedName(assignment.Left));
+            }
+        }
+
+        foreach (var returnStatement in root.DescendantNodes().OfType<ReturnStatementSyntax>())
+        {
+            if (returnStatement.Expression is not null)
+            {
+                AddCandidate(returnStatement.Expression, returnStatement, "");
+            }
+        }
+
+        foreach (var arrowExpression in root.DescendantNodes().OfType<ArrowExpressionClauseSyntax>())
+        {
+            AddCandidate(arrowExpression.Expression, arrowExpression, "");
+        }
+
+        foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (IsStringConstructionInvocation(invocation))
+            {
+                continue;
+            }
+
+            foreach (var argument in invocation.ArgumentList.Arguments)
+            {
+                AddCandidate(argument.Expression, invocation, GetArgumentName(argument));
+            }
+        }
+
+        foreach (var creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            if (creation.ArgumentList is null)
+            {
+                continue;
+            }
+
+            foreach (var argument in creation.ArgumentList.Arguments)
+            {
+                AddCandidate(argument.Expression, creation, GetArgumentName(argument));
+            }
+        }
+
+        return invocations;
+
+        void AddCandidate(ExpressionSyntax expression, SyntaxNode syntax, string contextName)
+        {
+            if (!ShouldCollectSqlStringExpression(expression, contextName))
+            {
+                return;
+            }
+
+            var key = $"{expression.SyntaxTree.FilePath}:{expression.SpanStart}:{expression.Span.End}";
+            if (!seen.Add(key))
+            {
+                return;
+            }
+
+            invocations.Add(new SqlInvocation(
+                "SqlString",
+                expression,
+                syntax,
+                sourceFile,
+                contextName,
+                AutoDetectSqlArgument: false,
+                IsSqlStringCandidate: true));
+        }
+    }
+
+    private static bool ShouldCollectSqlStringExpression(ExpressionSyntax expression, string contextName)
+    {
+        return LooksLikeSqlCarrier(expression, contextName) ||
+               ContainsSqlKeyword(expression.ToString());
+    }
+
+    private static bool IsStringConstructionInvocation(InvocationExpressionSyntax invocation)
+    {
+        var methodName = GetCallableName(invocation.Expression);
+        return methodName is "Format" or "Append" or "AppendLine" or "AppendFormat";
+    }
+
+    private static string GetAssignedName(ExpressionSyntax expression)
+    {
+        return expression switch
+        {
+            IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.ValueText,
+            ElementAccessExpressionSyntax elementAccess => elementAccess.Expression.ToString(),
+            _ => ""
+        };
+    }
+
     private static IReadOnlyList<SqlCandidate> BuildSqlCandidates(SymbolicValue evaluated, bool onlySqlObjects)
     {
         var candidates = new List<SqlCandidate>();
@@ -329,6 +470,11 @@ public sealed class SimpleSourceAnalyzer
                normalized.Contains("commandtext", StringComparison.Ordinal) ||
                normalized.Contains("cmdtext", StringComparison.Ordinal) ||
                normalized.Contains("statement", StringComparison.Ordinal);
+    }
+
+    private static bool ContainsSqlKeyword(string text)
+    {
+        return Regex.IsMatch(text, @"\b(SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|WITH)\b", RegexOptions.IgnoreCase);
     }
 
     private static bool LooksLikeSqlStatement(string sql)
@@ -652,7 +798,8 @@ public sealed class SimpleSourceAnalyzer
         SyntaxNode Syntax,
         SourceFile SourceFile,
         string ArgumentName,
-        bool AutoDetectSqlArgument);
+        bool AutoDetectSqlArgument,
+        bool IsSqlStringCandidate = false);
 
     private sealed record ReachableSqlInvocations(
         IReadOnlyList<SqlInvocation> Invocations,

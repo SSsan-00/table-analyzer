@@ -31,12 +31,13 @@ var tests = new (string Name, Action Body)[]
     ("analyzer ignores sql-looking calls in comments", Tests.AnalyzerIgnoresSqlLookingCallsInComments),
     ("analyzer handles semicolons inside sql string literals", Tests.AnalyzerHandlesSemicolonsInsideSqlStringLiterals),
     ("analyzer detects sql command object creation", Tests.AnalyzerDetectsSqlCommandObjectCreation),
-    ("analyzer ignores sql method name on non sql receiver", Tests.AnalyzerIgnoresSqlMethodNameOnNonSqlReceiver),
+    ("analyzer collects sql string on non sql receiver", Tests.AnalyzerCollectsSqlStringOnNonSqlReceiver),
     ("analyzer resolves configured sql execution method", Tests.AnalyzerResolvesConfiguredSqlExecutionMethod),
     ("analyzer resolves configured sql argument index", Tests.AnalyzerResolvesConfiguredSqlArgumentIndex),
     ("analyzer auto detects configured sql argument", Tests.AnalyzerAutoDetectsConfiguredSqlArgument),
     ("analyzer records unresolved likely sql argument for auto detected method", Tests.AnalyzerRecordsUnresolvedLikelySqlArgumentForAutoDetectedMethod),
     ("analyzer keeps sql snippet when auto detected sql has no objects", Tests.AnalyzerKeepsSqlSnippetWhenAutoDetectedSqlHasNoObjects),
+    ("analyzer collects sql string without configured execution method", Tests.AnalyzerCollectsSqlStringWithoutConfiguredExecutionMethod),
     ("analyzer resolves caller argument into sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoSqlWrapper),
     ("analyzer resolves mixed named caller argument into sql wrapper", Tests.AnalyzerResolvesMixedNamedCallerArgumentIntoSqlWrapper),
     ("analyzer resolves caller argument into context sql wrapper", Tests.AnalyzerResolvesCallerArgumentIntoContextSqlWrapper),
@@ -44,7 +45,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer reports dynamic caller argument candidate", Tests.AnalyzerReportsDynamicCallerArgumentCandidate),
     ("analyzer reports insert select target and source", Tests.AnalyzerReportsInsertSelectTargetAndSource),
     ("analyzer parses merge source and target with t-sql ast", Tests.AnalyzerParsesMergeSourceAndTargetWithTsqlAst),
-    ("analyzer ignores source local execute method", Tests.AnalyzerIgnoresSourceLocalExecuteMethod),
+    ("analyzer collects source local sql string", Tests.AnalyzerCollectsSourceLocalSqlString),
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
     ("runner writes xlsx only when requested", Tests.RunnerWritesXlsxOnlyWhenRequested),
@@ -330,8 +331,10 @@ internal static class Tests
 
         var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/UserService.cs")], new AnalyzerConfiguration());
 
-        Assert.Single(result.TableUsages);
-        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        var executedRows = result.TableUsages.Where(row => row.SqlExecutionMethod == "Query").ToArray();
+        Assert.Single(executedRows);
+        Assert.Equal("dbo.Users", executedRows[0].FullName);
+        Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.NumericUsers");
     }
 
     public static void AnalyzerResolvesHelperMethodOptionalArgumentDefault()
@@ -733,7 +736,7 @@ internal static class Tests
         Assert.Equal("DELETE", result.TableUsages[0].Operation);
     }
 
-    public static void AnalyzerIgnoresSqlMethodNameOnNonSqlReceiver()
+    public static void AnalyzerCollectsSqlStringOnNonSqlReceiver()
     {
         using var temp = TempWorkspace.Create();
         var path = temp.Write("Services/TextService.cs", """
@@ -749,8 +752,9 @@ internal static class Tests
 
         var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/TextService.cs")], new AnalyzerConfiguration());
 
-        Assert.Equal(0, result.TableUsages.Count);
-        Assert.Equal(0, result.SqlSnippets.Count);
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.Users", result.TableUsages[0].FullName);
+        Assert.Equal("SqlString", result.TableUsages[0].SqlExecutionMethod);
     }
 
     public static void AnalyzerResolvesConfiguredSqlExecutionMethod()
@@ -889,6 +893,32 @@ internal static class Tests
         Assert.Equal("NoSqlObjectsFound", result.UnresolvedSql[0].Reason);
         Assert.Equal("SELECT 1", result.SqlSnippets[0].SqlText);
         Assert.Equal(5, result.SqlSnippets[0].Line);
+    }
+
+    public static void AnalyzerCollectsSqlStringWithoutConfiguredExecutionMethod()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CustomDbService.cs", """
+            class CustomDbService
+            {
+                void Run()
+                {
+                    var sql = BuildSql("Users");
+                    db.ExecDb(sql);
+                }
+
+                string BuildSql(string table)
+                {
+                    return "SELECT * FROM dbo." + table;
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CustomDbService.cs")], new AnalyzerConfiguration());
+
+        Assert.True(result.TableUsages.Count >= 1);
+        Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.Users");
+        Assert.Contains(result.SqlSnippets.Select(row => row.SqlExecutionMethod), "SqlString");
     }
 
     public static void AnalyzerResolvesCallerArgumentIntoSqlWrapper()
@@ -1111,7 +1141,7 @@ internal static class Tests
         Assert.Equal("Source", source.SqlRole);
     }
 
-    public static void AnalyzerIgnoresSourceLocalExecuteMethod()
+    public static void AnalyzerCollectsSourceLocalSqlString()
     {
         using var temp = TempWorkspace.Create();
         var path = temp.Write("Services/Worker.cs", """
@@ -1128,8 +1158,9 @@ internal static class Tests
 
         var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/Worker.cs")], new AnalyzerConfiguration());
 
-        Assert.Equal(0, result.TableUsages.Count);
-        Assert.Equal(0, result.SqlSnippets.Count);
+        Assert.Single(result.TableUsages);
+        Assert.Equal("dbo.NotSql", result.TableUsages[0].FullName);
+        Assert.Equal("SqlString", result.TableUsages[0].SqlExecutionMethod);
     }
 
     public static void AnalyzerReportsFileProgress()

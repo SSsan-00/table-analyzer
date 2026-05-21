@@ -21,6 +21,7 @@ C#ソースは Roslyn の構文木と SemanticModel で解析します。SQL本�
 - GUIで追加した独自メソッドは引数位置指定なしでSQL候補を自動判定
 - SQL実行メソッドを内部で呼ぶメソッドは、呼び出し元の実引数を仮引数へ流して再評価
 - SQL実行メソッド検出では、SemanticModelで解決できる非SQLの通常メソッド呼び出しを除外
+- 実行メソッド指定に依存せず、ソース中で構築されたSQLらしい文字列も `SqlString` として解析
 - 文字列リテラル、文字列連結、補間文字列、`string.Format` を解析
 - `StringBuilder` の初期値、`Append`、`AppendLine`、`AppendFormat`、`ToString()` を解析
 - ローカル変数、クラス定数、`static readonly`、フィールド初期化、プロパティ、単純なオブジェクト初期化/プロパティ代入を追跡
@@ -73,6 +74,8 @@ SearchUsers
 指定したメソッドは受信オブジェクトの型を問わずSQL実行候補として扱います。`db.ExecDb(sql)`、`SqlHelper.ExecDb(sql)`、同一クラス内の `ExecDb(sql)` のような独自ラッパーを対象にできます。指定メソッドを内部で呼ぶメソッドについては、呼び出し元の実引数を仮引数に流して再評価します。
 
 例えば `SearchUsers("Users")` が `SearchUsers(string table)` 内で `db.ExecDb("SELECT * FROM dbo." + table)` を呼ぶ場合、`table = "Users"` として解析し、`dbo.Users` を出力します。候補が複数ある場合は複数行、実行時値が残る場合は `{table}` のような動的候補として出力します。
+
+漏れ防止のため、解析対象メソッドに指定していない呼び出しでも、`var sql = ...`、`return "SELECT ..."`、任意メソッドへのSQL文字列引数など、ソース中でSQLらしい文字列が構築されていれば `SqlExecutionMethod=SqlString` として解析します。実行確定ではなく「SQL文字列候補」ですが、CRUDサマリにも反映します。
 
 入力値はアプリ終了後も保持されます。保存先はユーザーのアプリケーションデータ配下の `TableAnalyzer/gui-settings.json` です。
 
@@ -198,7 +201,7 @@ table-analysis.xlsx   上記CSV相当の内容をシート分割した1ブック
 
 まず `sql-snippets`、`unresolved-sql`、`warnings` を確認してください。
 
-- `sql-snippets` が少ない: SQL実行メソッドとして検出できていません。GUIの「解析対象メソッド」に独自DBラッパー名を追加してください。
+- `sql-snippets` が少ない: SQL文字列の構築自体を検出できていない可能性があります。GUIの「解析対象メソッド」に独自DBラッパー名を追加すると、引数名や未解決値も手掛かりにできます。
 - `unresolved-sql` が多い: 実行箇所は検出できていますが、SQL文字列やテーブル名を静的に確定できていません。
 - `warnings` がある: ファイル読み込みや構文解析で除外されたファイルがあります。
 - 解析対象ファイルを指定している: そのファイルから到達できる呼び出しを中心に解析します。別ファイル単体で実行されるSQLも拾う場合は、解析対象ファイルを省略してフォルダ全体を解析してください。
