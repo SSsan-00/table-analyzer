@@ -57,6 +57,7 @@ var tests = new (string Name, Action Body)[]
     ("analyzer reports file progress", Tests.AnalyzerReportsFileProgress),
     ("runner analyzes single target file with project context", Tests.RunnerAnalyzesSingleTargetFileWithProjectContext),
     ("runner switches single file analysis scope for xlsx", Tests.RunnerSwitchesSingleFileAnalysisScopeForXlsx),
+    ("runner exports xlsx when one source file analysis fails", Tests.RunnerExportsXlsxWhenOneSourceFileAnalysisFails),
     ("runner writes xlsx only when requested", Tests.RunnerWritesXlsxOnlyWhenRequested),
     ("xlsx table usages includes sql text", Tests.XlsxTableUsagesIncludesSqlText),
     ("csv writer writes query and source crud summaries", Tests.CsvWriterWritesQueryAndSourceCrudSummaries),
@@ -1600,6 +1601,61 @@ internal static class Tests
 
             Assert.True(File.Exists(Path.Combine(run.ReportDirectory, "table-analysis.xlsx")));
             Assert.True(!File.Exists(Path.Combine(run.ReportDirectory, "table-usages.csv")));
+        }
+        finally
+        {
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+        }
+    }
+
+    public static void RunnerExportsXlsxWhenOneSourceFileAnalysisFails()
+    {
+        using var temp = TempWorkspace.Create();
+        temp.Write("Services/GoodService.cs", """
+            class GoodService
+            {
+                void Run()
+                {
+                    db.Query("SELECT * FROM dbo.Users");
+                }
+            }
+            """);
+        temp.Write("Services/BadService.cs", """
+            class BadService
+            {
+                string BuildSql(string table, string table)
+                {
+                    return "SELECT * FROM dbo." + table;
+                }
+
+                void Run()
+                {
+                    db.Query(BuildSql("Users", "Orders"));
+                }
+            }
+            """);
+        var output = Path.Combine(Path.GetTempPath(), "table-analyzer-output-tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var run = new AnalysisRunner().Run(
+                new AnalysisRunRequest(temp.Root, temp.Root, null, output, ReportOutputFormat.Xlsx),
+                new AnalyzerConfiguration(),
+                new DateTime(2026, 5, 12, 9, 0, 0));
+
+            Assert.True(File.Exists(Path.Combine(run.ReportDirectory, "table-analysis.xlsx")));
+            Assert.Contains(run.AnalysisResult.TableUsages.Select(row => row.FullName), "dbo.Users");
+            Assert.Contains(run.AnalysisResult.Warnings.Select(row => row.Code), "ANALYSIS_FILE_FAILED");
+
+            var warning = run.AnalysisResult.Warnings.Single(row => row.Code == "ANALYSIS_FILE_FAILED");
+            Assert.Equal("Services/BadService.cs", warning.SourceFile);
+            Assert.Contains(warning.Message, "ArgumentException");
+
+            var workbookXml = ReadAllWorksheetXml(Path.Combine(run.ReportDirectory, "table-analysis.xlsx"));
+            Assert.Contains(workbookXml, "ANALYSIS_FILE_FAILED");
         }
         finally
         {

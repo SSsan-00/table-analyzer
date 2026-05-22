@@ -29,6 +29,7 @@ internal sealed class MainForm : Form
     private readonly Label _progressLabel = new();
     private readonly TextBox _resultTextBox = new();
     private string _lastReportDirectory = "";
+    private string _currentProgressFile = "";
     private const string TargetOnlyScopeLabel = "対象ファイルのみ解析";
     private const string RelatedFilesScopeLabel = "関連ファイルも再帰的に解析";
 
@@ -211,6 +212,7 @@ internal sealed class MainForm : Form
 
         SetBusy(true);
         _lastReportDirectory = "";
+        _currentProgressFile = "";
         _openReportButton.Enabled = false;
         _resultTextBox.Clear();
         _progressBar.Value = 0;
@@ -231,6 +233,13 @@ internal sealed class MainForm : Form
             _progressLabel.Text = "エラー";
             _resultTextBox.Text = ex.Message;
             MessageBox.Show(this, ex.Message, "解析できませんでした", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var message = BuildExceptionText(ex, _currentProgressFile);
+            _progressLabel.Text = "エラー";
+            _resultTextBox.Text = message;
+            MessageBox.Show(this, message, "解析中に予期しないエラーが発生しました", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -267,6 +276,7 @@ internal sealed class MainForm : Form
         var file = string.IsNullOrWhiteSpace(progress.CurrentFile)
             ? ""
             : $"  {progress.CurrentFile}";
+        _currentProgressFile = progress.CurrentFile;
         _progressLabel.Text = $"{stage}: {progress.Completed}/{progress.Total} ({percent}%){file}";
     }
 
@@ -289,11 +299,18 @@ internal sealed class MainForm : Form
             return;
         }
 
-        Process.Start(new ProcessStartInfo
+        try
         {
-            FileName = _lastReportDirectory,
-            UseShellExecute = true
-        });
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = _lastReportDirectory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or Win32Exception)
+        {
+            MessageBox.Show(this, ex.Message, "出力先を開けませんでした", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void SaveSettings()
@@ -322,6 +339,26 @@ internal sealed class MainForm : Form
             $"未解決SQL: {run.AnalysisResult.UnresolvedSql.Count}",
             $"警告: {run.AnalysisResult.Warnings.Count}"
         ]);
+    }
+
+    private static string BuildExceptionText(Exception exception, string currentFile)
+    {
+        var lines = new List<string>
+        {
+            $"{exception.GetType().Name}: {exception.Message}"
+        };
+        if (!string.IsNullOrWhiteSpace(currentFile))
+        {
+            lines.Add($"処理中ファイル: {currentFile}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(exception.StackTrace))
+        {
+            lines.Add("");
+            lines.Add(exception.StackTrace);
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private ReportOutputFormat SelectedOutputFormat =>

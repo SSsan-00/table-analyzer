@@ -45,7 +45,24 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            AnalyzeFile(file, parsed.Root, methods, semanticContext, configuration, evaluator, callContexts, sourceFilesByTree, result, ids);
+            try
+            {
+                AnalyzeFile(file, parsed.Root, methods, semanticContext, configuration, evaluator, callContexts, sourceFilesByTree, result, ids);
+            }
+            catch (Exception ex) when (IsRecoverableAnalysisException(ex))
+            {
+                result.Warnings.Add(new WarningRow(
+                    ids.NextWarningId(),
+                    "High",
+                    "ANALYSIS_FILE_FAILED",
+                    file.RelativePath,
+                    0,
+                    "",
+                    FormatExceptionMessage(ex),
+                    "",
+                    ""));
+            }
+
             completed++;
             progress?.Report(new AnalysisProgress("analyzing", completed, files.Count, file.RelativePath));
         }
@@ -87,9 +104,9 @@ public sealed class SimpleSourceAnalyzer
                 var tree = CSharpSyntaxTree.ParseText(read.Text, path: fullPath);
                 parsedFiles[fullPath] = new ParsedSourceFile(file, tree.GetCompilationUnitRoot());
             }
-            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            catch (Exception ex) when (IsRecoverableAnalysisException(ex))
             {
-                result.Warnings.Add(new WarningRow(ids.NextWarningId(), "Medium", "FILE_PARSE_FAILED", file.RelativePath, 0, "", ex.Message, "", ""));
+                result.Warnings.Add(new WarningRow(ids.NextWarningId(), "Medium", "FILE_PARSE_FAILED", file.RelativePath, 0, "", FormatExceptionMessage(ex), "", ""));
             }
 
             completed++;
@@ -97,6 +114,21 @@ public sealed class SimpleSourceAnalyzer
         }
 
         return parsedFiles;
+    }
+
+    private static bool IsRecoverableAnalysisException(Exception exception)
+    {
+        return exception is not OperationCanceledException;
+    }
+
+    private static string FormatExceptionMessage(Exception exception)
+    {
+        var stackLine = exception.StackTrace?
+            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? "";
+        return string.IsNullOrWhiteSpace(stackLine)
+            ? $"{exception.GetType().Name}: {exception.Message}"
+            : $"{exception.GetType().Name}: {exception.Message} ({stackLine})";
     }
 
     private static IReadOnlyList<SourceFile> MergeFiles(IReadOnlyList<SourceFile> first, IReadOnlyList<SourceFile> second)
