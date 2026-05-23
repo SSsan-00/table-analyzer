@@ -998,12 +998,11 @@ public sealed class SimpleSourceAnalyzer
                     .ToArray();
             }
 
-            return
-            [
-                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-                MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
-                MetadataReference.CreateFromFile(typeof(Task).Assembly.Location)
-            ];
+            var runtimeDirectory = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
+            return Directory.EnumerateFiles(runtimeDirectory, "*.dll")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(path => MetadataReference.CreateFromFile(path))
+                .ToArray();
         }
     }
 

@@ -157,6 +157,45 @@ dotnet build src/TableAnalyzer.Cli/TableAnalyzer.Cli.csproj -c Release
 dotnet build src/TableAnalyzer.Gui/TableAnalyzer.Gui.csproj -c Release
 ```
 
+## リリース用単一ファイルexe
+
+Windows x64 向けの自己完結型単一ファイル exe を作成する場合:
+
+```powershell
+.\bootstrap.ps1 publish
+```
+
+出力先:
+
+```text
+publish\TableAnalyzer.Gui\win-x64\TableAnalyzer.Gui.exe
+publish\TableAnalyzer.Cli\win-x64\TableAnalyzer.Cli.exe
+```
+
+Windows ARM64 向けに作成する場合:
+
+```powershell
+.\bootstrap.ps1 publish -Runtime win-arm64
+```
+
+GUIを配布する場合は `TableAnalyzer.Gui.exe` を、CLIを配布する場合は `TableAnalyzer.Cli.exe` をリリース成果物として使います。`--self-contained true` で発行するため、利用者端末に .NET ランタイムを別途インストールしなくても起動できます。
+
+作成したGUIを起動する場合:
+
+```powershell
+.\publish\TableAnalyzer.Gui\win-x64\TableAnalyzer.Gui.exe
+```
+
+作成したCLIで解析する場合:
+
+```powershell
+.\publish\TableAnalyzer.Cli\win-x64\TableAnalyzer.Cli.exe analyze `
+  --project-folder "C:\src\MyApp" `
+  --analysis-folder "C:\src\MyApp\Pages" `
+  --out "C:\work\table-analysis" `
+  --format xlsx
+```
+
 ## テスト
 
 ```bash
@@ -246,6 +285,12 @@ INSERT先は `Operation=INSERT`, `SqlRole=Target`、SELECT元は `Operation=SELE
 ```powershell
 .\bootstrap.ps1 init
 .\bootstrap.ps1 build
+```
+
+空フォルダに `bootstrap.ps1` だけを置いて、リリース用 exe まで作成する場合:
+
+```powershell
+.\bootstrap.ps1 publish
 ```
 
 WinForms GUIを起動する場合:
