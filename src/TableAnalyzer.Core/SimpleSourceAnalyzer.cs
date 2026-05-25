@@ -8,6 +8,9 @@ namespace TableAnalyzer.Core;
 
 public sealed class SimpleSourceAnalyzer
 {
+    private const string CandidateLimitExceededNote = "candidate limit exceeded";
+    private const int DiagnosticPreviewLength = 500;
+
     public AnalysisResult Analyze(IReadOnlyList<SourceFile> files, AnalyzerConfiguration configuration)
     {
         return Analyze(files, configuration, progress: null);
@@ -187,6 +190,20 @@ public sealed class SimpleSourceAnalyzer
                     ? [new Dictionary<string, SymbolicValue>(StringComparer.Ordinal)]
                     : callContexts.GetParameterContexts(containingMethod, reachable.Methods);
                 var evaluated = evaluator.Evaluate(invocation.SqlExpression, containingMethod, parameterContexts);
+                var evaluationNotes = BuildEvaluationNotes(evaluated, invocation, location, containingSymbol, configuration);
+                if (IsCandidateLimitExceeded(evaluated))
+                {
+                    result.Warnings.Add(new WarningRow(
+                        ids.NextWarningId(),
+                        "High",
+                        "CANDIDATE_LIMIT_EXCEEDED",
+                        sourceFile.RelativePath,
+                        location.Line,
+                        containingSymbol,
+                        evaluationNotes,
+                        "",
+                        sqlId));
+                }
 
                 if (evaluated.Candidates.Count == 0)
                 {
@@ -203,8 +220,8 @@ public sealed class SimpleSourceAnalyzer
                     }
 
                     emittedSqlByMethod.Add(CreateEmittedSqlKey(sourceFile, pattern));
-                    result.UnresolvedSql.Add(new UnresolvedSqlRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "RuntimeValue", invocation.SqlExpression.ToString(), containingSymbol, evaluated.Notes));
-                    result.SqlSnippets.Add(new SqlSnippetRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "unknown", pattern, NormalizeSql(pattern), containingSymbol, evaluated.Notes));
+                    result.UnresolvedSql.Add(new UnresolvedSqlRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "RuntimeValue", invocation.SqlExpression.ToString(), containingSymbol, evaluationNotes));
+                    result.SqlSnippets.Add(new SqlSnippetRow(sqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "unknown", pattern, NormalizeSql(pattern), containingSymbol, evaluationNotes));
                     continue;
                 }
 
@@ -240,7 +257,7 @@ public sealed class SimpleSourceAnalyzer
                         string.Join("|", candidates.Select(candidate => candidate.Sql)),
                         confidence,
                         evaluated.ResolutionPath,
-                        evaluated.Notes));
+                        evaluationNotes));
                 }
 
                 foreach (var candidate in candidates)
@@ -248,11 +265,13 @@ public sealed class SimpleSourceAnalyzer
                     emittedSqlByMethod.Add(CreateEmittedSqlKey(sourceFile, candidate.Sql));
 
                     var currentSqlId = candidates.Count == 1 ? sqlId : ids.NextSqlId();
-                    result.SqlSnippets.Add(new SqlSnippetRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, confidence, candidate.Sql, NormalizeSql(candidate.Sql), containingSymbol, evaluated.Notes));
+                    var candidateNotes = CombineNotes(evaluationNotes, BuildSqlCandidateNotes(candidate));
+                    result.SqlSnippets.Add(new SqlSnippetRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, confidence, candidate.Sql, NormalizeSql(candidate.Sql), containingSymbol, candidateNotes));
 
                     if (candidate.Objects.Count == 0)
                     {
-                        result.UnresolvedSql.Add(new UnresolvedSqlRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, "NoSqlObjectsFound", invocation.SqlExpression.ToString(), containingSymbol, ""));
+                        var reason = candidate.ParseErrors.Count > 0 ? "TsqlParseError" : "NoSqlObjectsFound";
+                        result.UnresolvedSql.Add(new UnresolvedSqlRow(currentSqlId, sourceFile.RelativePath, location.Line, location.Column, containingSymbol, invocation.MethodName, reason, invocation.SqlExpression.ToString(), containingSymbol, candidateNotes));
                         continue;
                     }
 
@@ -276,7 +295,7 @@ public sealed class SimpleSourceAnalyzer
                             0,
                             candidateGroupId.Length > 0 ? evaluated.Pattern : "",
                             candidateGroupId,
-                            evaluated.Notes));
+                            candidateNotes));
                     }
                 }
             }
@@ -579,11 +598,69 @@ public sealed class SimpleSourceAnalyzer
                 continue;
             }
 
-            var objects = SqlObjectExtractor.Extract(candidate);
-            candidates.Add(new SqlCandidate(candidate, objects));
+            var extraction = SqlObjectExtractor.ExtractWithDiagnostics(candidate);
+            candidates.Add(new SqlCandidate(candidate, extraction.Objects, extraction.ParseErrors, extraction.NormalizedSql));
         }
 
         return candidates;
+    }
+
+    private static bool IsCandidateLimitExceeded(SymbolicValue evaluated)
+    {
+        return evaluated.Notes.Contains(CandidateLimitExceededNote, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildEvaluationNotes(
+        SymbolicValue evaluated,
+        SqlInvocation invocation,
+        SourceLocation location,
+        string containingSymbol,
+        AnalyzerConfiguration configuration)
+    {
+        if (!IsCandidateLimitExceeded(evaluated))
+        {
+            return evaluated.Notes;
+        }
+
+        return CombineNotes(
+            evaluated.Notes,
+            $"MaxCandidatesPerExpression={configuration.MaxCandidatesPerExpression}",
+            $"Source={invocation.SourceFile.RelativePath}:{location.Line}:{location.Column}",
+            string.IsNullOrWhiteSpace(containingSymbol) ? "" : $"ContainingSymbol={containingSymbol}",
+            $"SqlExecutionMethod={invocation.MethodName}",
+            $"Expression={Preview(invocation.SqlExpression.ToString())}",
+            string.IsNullOrWhiteSpace(evaluated.ResolutionPath) ? "" : $"ResolutionPath={Preview(evaluated.ResolutionPath)}",
+            string.IsNullOrWhiteSpace(evaluated.Pattern) ? "" : $"Pattern={Preview(evaluated.Pattern)}",
+            evaluated.Candidates.Count == 0 ? "" : $"CandidatePreview={Preview(string.Join(" | ", evaluated.Candidates.Take(5)))}");
+    }
+
+    private static string BuildSqlCandidateNotes(SqlCandidate candidate)
+    {
+        if (candidate.ParseErrors.Count == 0)
+        {
+            return "";
+        }
+
+        return CombineNotes(
+            "T-SQL parse failed",
+            string.Join(" | ", candidate.ParseErrors.Take(5)),
+            $"SqlPreview={Preview(candidate.Sql)}",
+            $"NormalizedSqlPreview={Preview(candidate.NormalizedSql)}");
+    }
+
+    private static string CombineNotes(params string[] notes)
+    {
+        return string.Join("; ", notes
+            .Where(note => !string.IsNullOrWhiteSpace(note))
+            .Distinct(StringComparer.Ordinal));
+    }
+
+    private static string Preview(string value)
+    {
+        value = NormalizeSql(value);
+        return value.Length <= DiagnosticPreviewLength
+            ? value
+            : value[..DiagnosticPreviewLength] + "...";
     }
 
     private static bool LooksLikeSqlCarrier(ExpressionSyntax expression, string argumentName)
@@ -936,7 +1013,7 @@ public sealed class SimpleSourceAnalyzer
         return Regex.Replace(sql, @"\s+", " ").Trim();
     }
 
-    private sealed record SqlCandidate(string Sql, IReadOnlyList<SqlObject> Objects);
+    private sealed record SqlCandidate(string Sql, IReadOnlyList<SqlObject> Objects, IReadOnlyList<string> ParseErrors, string NormalizedSql);
 
     private sealed record SqlInvocation(
         string MethodName,
@@ -2799,7 +2876,12 @@ public sealed class SimpleSourceAnalyzer
                     {
                         if (next.Count >= configuration.MaxCandidatesPerExpression)
                         {
-                            return new SymbolicValue(next, string.Concat(parts.Select(item => item.Pattern)), "dynamic", path, "candidate limit exceeded");
+                            return new SymbolicValue(
+                                next,
+                                string.Concat(parts.Select(item => item.Pattern)),
+                                "dynamic",
+                                path,
+                                $"{CandidateLimitExceededNote}; expansion={path}; emitted={next.Count}; attemptedAtLeast={configuration.MaxCandidatesPerExpression + 1}");
                         }
 
                         next.Add(prefix + addition);
@@ -2830,7 +2912,12 @@ public sealed class SimpleSourceAnalyzer
                 .ToArray();
             if (distinct.Length > configuration.MaxCandidatesPerExpression)
             {
-                return new SymbolicValue(distinct.Take(configuration.MaxCandidatesPerExpression).ToArray(), pattern, "dynamic", path, "candidate limit exceeded");
+                return new SymbolicValue(
+                    distinct.Take(configuration.MaxCandidatesPerExpression).ToArray(),
+                    pattern,
+                    "dynamic",
+                    path,
+                    $"{CandidateLimitExceededNote}; expansion={path}; emitted={configuration.MaxCandidatesPerExpression}; attemptedAtLeast={configuration.MaxCandidatesPerExpression + 1}");
             }
 
             var hasDynamicCandidate = distinct.Any(candidate => candidate.Contains('{', StringComparison.Ordinal) && candidate.Contains('}', StringComparison.Ordinal));
@@ -2898,9 +2985,16 @@ public sealed class SimpleSourceAnalyzer
 
     private sealed record SqlObject(string ObjectType, string ObjectName, string FullName, string Operation, string SqlRole);
 
+    private sealed record SqlExtractionResult(IReadOnlyList<SqlObject> Objects, IReadOnlyList<string> ParseErrors, string NormalizedSql);
+
     private static class SqlObjectExtractor
     {
         public static IReadOnlyList<SqlObject> Extract(string sql)
+        {
+            return ExtractWithDiagnostics(sql).Objects;
+        }
+
+        public static SqlExtractionResult ExtractWithDiagnostics(string sql)
         {
             var normalized = PlaceholderSqlNormalizer.Normalize(sql);
             var parser = new TSql160Parser(initialQuotedIdentifiers: true);
@@ -2908,12 +3002,20 @@ public sealed class SimpleSourceAnalyzer
             var fragment = parser.Parse(reader, out var errors);
             if (errors.Count > 0)
             {
-                return [];
+                return new SqlExtractionResult(
+                    [],
+                    errors.Select(FormatParseError).ToArray(),
+                    normalized.Sql);
             }
 
             var visitor = new TsqlObjectVisitor(normalized.Placeholders);
             fragment.Accept(visitor);
-            return visitor.Objects;
+            return new SqlExtractionResult(visitor.Objects, [], normalized.Sql);
+        }
+
+        private static string FormatParseError(ParseError error)
+        {
+            return $"Line={error.Line}, Column={error.Column}, Number={error.Number}, Message={error.Message}";
         }
 
         private sealed class TsqlObjectVisitor : TSqlFragmentVisitor

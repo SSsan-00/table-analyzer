@@ -38,6 +38,8 @@ var tests = new (string Name, Action Body)[]
     ("analyzer records unresolved likely sql argument for auto detected method", Tests.AnalyzerRecordsUnresolvedLikelySqlArgumentForAutoDetectedMethod),
     ("analyzer keeps sql snippet when auto detected sql has no objects", Tests.AnalyzerKeepsSqlSnippetWhenAutoDetectedSqlHasNoObjects),
     ("analyzer collects sql string without configured execution method", Tests.AnalyzerCollectsSqlStringWithoutConfiguredExecutionMethod),
+    ("analyzer reports candidate limit details", Tests.AnalyzerReportsCandidateLimitDetails),
+    ("analyzer reports t-sql parse error details", Tests.AnalyzerReportsTsqlParseErrorDetails),
     ("analyzer does not collect plain text containing sql keyword", Tests.AnalyzerDoesNotCollectPlainTextContainingSqlKeyword),
     ("analyzer resolves array indexer sql", Tests.AnalyzerResolvesArrayIndexerSql),
     ("analyzer resolves dictionary indexer sql", Tests.AnalyzerResolvesDictionaryIndexerSql),
@@ -931,6 +933,71 @@ internal static class Tests
         Assert.True(result.TableUsages.Count >= 1);
         Assert.Contains(result.TableUsages.Select(row => row.FullName), "dbo.Users");
         Assert.Contains(result.SqlSnippets.Select(row => row.SqlExecutionMethod), "SqlString");
+    }
+
+    public static void AnalyzerReportsCandidateLimitDetails()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/CandidateLimitService.cs", """
+            class CandidateLimitService
+            {
+                void Run()
+                {
+                    var sql = "SELECT * FROM dbo." + Table() + " WHERE Status = " + Status();
+                }
+
+                string Table()
+                {
+                    return flag ? "Users" : "Orders";
+                }
+
+                string Status()
+                {
+                    return flag ? "1" : "2";
+                }
+            }
+            """);
+        var configuration = new AnalyzerConfiguration { MaxCandidatesPerExpression = 2 };
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/CandidateLimitService.cs")], configuration);
+
+        var warning = result.Warnings.Single(row => row.Code == "CANDIDATE_LIMIT_EXCEEDED");
+        Assert.Equal("Services/CandidateLimitService.cs", warning.SourceFile);
+        Assert.Equal(5, warning.Line);
+        Assert.Contains(warning.Message, "candidate limit exceeded");
+        Assert.Contains(warning.Message, "MaxCandidatesPerExpression=2");
+        Assert.Contains(warning.Message, "Expression=");
+        Assert.Contains(warning.Message, "Pattern=");
+        Assert.Contains(warning.Message, "CandidatePreview=");
+
+        var dynamicSql = result.DynamicSql.Single();
+        Assert.Contains(dynamicSql.Notes, "candidate limit exceeded");
+        Assert.Contains(dynamicSql.Notes, "MaxCandidatesPerExpression=2");
+        Assert.True(result.SqlSnippets.Any(row => row.Notes.Contains("candidate limit exceeded", StringComparison.Ordinal)));
+    }
+
+    public static void AnalyzerReportsTsqlParseErrorDetails()
+    {
+        using var temp = TempWorkspace.Create();
+        var path = temp.Write("Services/BadSqlService.cs", """
+            class BadSqlService
+            {
+                void Run()
+                {
+                    var sql = "SELECT FROM";
+                }
+            }
+            """);
+
+        var result = new SimpleSourceAnalyzer().Analyze([new SourceFile(path, "Services/BadSqlService.cs")], new AnalyzerConfiguration());
+
+        Assert.Single(result.UnresolvedSql);
+        Assert.Equal("TsqlParseError", result.UnresolvedSql[0].Reason);
+        Assert.Contains(result.UnresolvedSql[0].Notes, "T-SQL parse failed");
+        Assert.Contains(result.UnresolvedSql[0].Notes, "Line=");
+        Assert.Contains(result.UnresolvedSql[0].Notes, "Column=");
+        Assert.Contains(result.UnresolvedSql[0].Notes, "Message=");
+        Assert.Contains(result.SqlSnippets[0].Notes, "SqlPreview=SELECT FROM");
     }
 
     public static void AnalyzerDoesNotCollectPlainTextContainingSqlKeyword()

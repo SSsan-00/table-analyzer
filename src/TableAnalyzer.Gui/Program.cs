@@ -326,8 +326,8 @@ internal sealed class MainForm : Form
 
     private static string BuildResultText(AnalysisRunResult run)
     {
-        return string.Join(Environment.NewLine,
-        [
+        var lines = new List<string>
+        {
             $"出力先: {run.ReportDirectory}",
             $"出力形式: {run.OutputFormat.ToString().ToLowerInvariant()}",
             $"解析範囲: {FormatAnalysisScope(run.AnalysisScope)}",
@@ -338,7 +338,24 @@ internal sealed class MainForm : Form
             $"動的SQL: {run.AnalysisResult.DynamicSql.Count}",
             $"未解決SQL: {run.AnalysisResult.UnresolvedSql.Count}",
             $"警告: {run.AnalysisResult.Warnings.Count}"
-        ]);
+        };
+
+        if (run.AnalysisResult.Warnings.Count > 0)
+        {
+            lines.Add("");
+            lines.Add("警告詳細:");
+            foreach (var warning in run.AnalysisResult.Warnings.Take(5))
+            {
+                lines.Add($"{warning.Code} {warning.SourceFile}:{warning.Line} {warning.Message}");
+            }
+
+            if (run.AnalysisResult.Warnings.Count > 5)
+            {
+                lines.Add($"他 {run.AnalysisResult.Warnings.Count - 5} 件は warnings シートまたは warnings.csv を確認してください。");
+            }
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private static string BuildExceptionText(Exception exception, string currentFile)
