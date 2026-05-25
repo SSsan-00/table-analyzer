@@ -23,6 +23,8 @@ internal sealed class MainForm : Form
     private readonly PathInputRow _outputRootRow;
     private readonly ComboBox _outputFormatComboBox = new();
     private readonly ComboBox _analysisScopeComboBox = new();
+    private readonly NumericUpDown _maxCandidatesNumericUpDown = new();
+    private readonly NumericUpDown _maxCallDepthNumericUpDown = new();
     private readonly Button _runButton = new();
     private readonly Button _openReportButton = new();
     private readonly ProgressBar _progressBar = new();
@@ -32,6 +34,8 @@ internal sealed class MainForm : Form
     private string _currentProgressFile = "";
     private const string TargetOnlyScopeLabel = "対象ファイルのみ解析";
     private const string RelatedFilesScopeLabel = "関連ファイルも再帰的に解析";
+    private const int MaxCandidatesPerExpressionUpperBound = 10000;
+    private const int MaxCallDepthUpperBound = 1000;
 
     public MainForm()
     {
@@ -46,6 +50,8 @@ internal sealed class MainForm : Form
         _outputRootRow = PathInputRow.ForFolder("出力先フォルダ", settings.OutputRoot);
         ConfigureOutputFormat(settings.OutputFormat);
         ConfigureAnalysisScope(settings.AnalysisScope);
+        ConfigureMaxCandidates(settings.MaxCandidatesPerExpression);
+        ConfigureMaxCallDepth(settings.MaxCallDepth);
 
         _projectFolderRow.PathSelected += path =>
         {
@@ -109,6 +115,24 @@ internal sealed class MainForm : Form
             : RelatedFilesScopeLabel;
     }
 
+    private void ConfigureMaxCandidates(int value)
+    {
+        _maxCandidatesNumericUpDown.Minimum = 1;
+        _maxCandidatesNumericUpDown.Maximum = MaxCandidatesPerExpressionUpperBound;
+        _maxCandidatesNumericUpDown.Increment = 10;
+        _maxCandidatesNumericUpDown.ThousandsSeparator = true;
+        _maxCandidatesNumericUpDown.Value = Math.Clamp(value, 1, MaxCandidatesPerExpressionUpperBound);
+    }
+
+    private void ConfigureMaxCallDepth(int value)
+    {
+        _maxCallDepthNumericUpDown.Minimum = 0;
+        _maxCallDepthNumericUpDown.Maximum = MaxCallDepthUpperBound;
+        _maxCallDepthNumericUpDown.Increment = 1;
+        _maxCallDepthNumericUpDown.ThousandsSeparator = true;
+        _maxCallDepthNumericUpDown.Value = Math.Clamp(value, 0, MaxCallDepthUpperBound);
+    }
+
     private void ConfigureProgress()
     {
         _progressBar.Dock = DockStyle.Fill;
@@ -157,12 +181,16 @@ internal sealed class MainForm : Form
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        inputPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         inputPanel.Controls.Add(_projectFolderRow, 0, 0);
         inputPanel.Controls.Add(_analysisFolderRow, 0, 1);
         inputPanel.Controls.Add(_analysisFileRow, 0, 2);
         inputPanel.Controls.Add(_outputRootRow, 0, 3);
         inputPanel.Controls.Add(BuildOutputFormatRow(), 0, 4);
         inputPanel.Controls.Add(BuildAnalysisScopeRow(), 0, 5);
+        inputPanel.Controls.Add(BuildMaxCandidatesRow(), 0, 6);
+        inputPanel.Controls.Add(BuildMaxCallDepthRow(), 0, 7);
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -221,7 +249,12 @@ internal sealed class MainForm : Form
         var progress = new Progress<AnalysisProgress>(UpdateProgress);
         try
         {
-            var run = await Task.Run(() => new AnalysisRunner().Run(request, new AnalyzerConfiguration(), progress));
+            var configuration = new AnalyzerConfiguration
+            {
+                MaxCallDepth = SelectedMaxCallDepth,
+                MaxCandidatesPerExpression = SelectedMaxCandidatesPerExpression
+            };
+            var run = await Task.Run(() => new AnalysisRunner().Run(request, configuration, progress));
             _lastReportDirectory = run.ReportDirectory;
             _openReportButton.Enabled = true;
             _progressBar.Value = 100;
@@ -289,6 +322,8 @@ internal sealed class MainForm : Form
         _outputRootRow.Enabled = !busy;
         _outputFormatComboBox.Enabled = !busy;
         _analysisScopeComboBox.Enabled = !busy;
+        _maxCandidatesNumericUpDown.Enabled = !busy;
+        _maxCallDepthNumericUpDown.Enabled = !busy;
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
     }
 
@@ -321,7 +356,9 @@ internal sealed class MainForm : Form
             _analysisFileRow.PathValue,
             _outputRootRow.PathValue,
             _outputFormatComboBox.SelectedItem?.ToString() ?? "csv",
-            FormatAnalysisScope(SelectedAnalysisScope)));
+            FormatAnalysisScope(SelectedAnalysisScope),
+            SelectedMaxCandidatesPerExpression,
+            SelectedMaxCallDepth));
     }
 
     private static string BuildResultText(AnalysisRunResult run)
@@ -388,6 +425,10 @@ internal sealed class MainForm : Form
             ? AnalysisScope.TargetOnly
             : AnalysisScope.RelatedFiles;
 
+    private int SelectedMaxCandidatesPerExpression => (int)_maxCandidatesNumericUpDown.Value;
+
+    private int SelectedMaxCallDepth => (int)_maxCallDepthNumericUpDown.Value;
+
     private static string FormatAnalysisScope(AnalysisScope scope)
     {
         return scope == AnalysisScope.TargetOnly ? "target-only" : "related-files";
@@ -442,6 +483,58 @@ internal sealed class MainForm : Form
 
         layout.Controls.Add(label, 0, 0);
         layout.Controls.Add(_analysisScopeComboBox, 1, 0);
+        return layout;
+    }
+
+    private Control BuildMaxCandidatesRow()
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(0, 0, 0, 10)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+
+        var label = new Label
+        {
+            Text = "候補上限数",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _maxCandidatesNumericUpDown.Dock = DockStyle.Fill;
+
+        layout.Controls.Add(label, 0, 0);
+        layout.Controls.Add(_maxCandidatesNumericUpDown, 1, 0);
+        return layout;
+    }
+
+    private Control BuildMaxCallDepthRow()
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(0, 0, 0, 10)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+
+        var label = new Label
+        {
+            Text = "呼び出し深度上限",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _maxCallDepthNumericUpDown.Dock = DockStyle.Fill;
+
+        layout.Controls.Add(label, 0, 0);
+        layout.Controls.Add(_maxCallDepthNumericUpDown, 1, 0);
         return layout;
     }
 
@@ -586,7 +679,9 @@ internal sealed record GuiSettings(
     string AnalysisFile = "",
     string OutputRoot = "",
     string OutputFormat = "csv",
-    string AnalysisScope = "related-files");
+    string AnalysisScope = "related-files",
+    int MaxCandidatesPerExpression = 50,
+    int MaxCallDepth = 8);
 
 internal static class GuiSettingsStore
 {
